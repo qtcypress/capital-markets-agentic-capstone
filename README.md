@@ -3,8 +3,9 @@
 A complete, runnable training project that takes a **manual tester with capital-markets
 domain knowledge** and turns them into a **tester of RAG and agentic AI systems**.
 
-Three applications, one live market-data layer, one knowledge corpus, and **383 tests**
-— 206 blue-team, 121 red-team, 31 UI, 25 hosting-security — all passing out of the box.
+Three applications, one live market-data layer, one knowledge corpus, and **455 tests, plus a 317-case IEEE 829 workbook**
+— 206 blue-team, 121 red-team, 37 UI, 37 hosting-security, 30 document-corpus, 28 IEEE harness — all
+green. The IEEE workbook is separate, and deliberately is not.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -21,7 +22,7 @@ Three applications, one live market-data layer, one knowledge corpus, and **383 
         └────────────┬───────┴────────────────┴────────┴─────────┘
                      │
         ┌────────────▼──────────────┐   ┌──────────────────────┐
-        │ Guardrails (12 controls)  │   │ Live market data     │
+        │ Guardrails (13 controls)  │   │ Live market data     │
         │ in / out, toggleable      │   │ live→snapshot→synth  │
         └───────────────────────────┘   └──────────────────────┘
 ```
@@ -55,8 +56,11 @@ Need a URL for one class today, with no hosting account at all? Open
 [`tools/run_in_colab.ipynb`](tools/run_in_colab.ipynb) in Google Colab: it
 installs, runs a sanity check, and opens a public tunnel that needs no signup.
 
-Pair either with **GitHub Codespaces** so each student gets the terminal the labs
-need. See [docs/04-deployment.md](docs/04-deployment.md) for the full comparison,
+Serving it from **your own subdomain** (`capstone.yourdomain.com` rather than the
+platform's hostname) is one CNAME record and no code change; `render.yaml` has
+the block to uncomment, and `QTCAP_CANONICAL_HOST` redirects the old URL so a
+class has exactly one address. Pair either with **GitHub Codespaces** so each
+student gets the terminal the labs need. See [docs/04-deployment.md](docs/04-deployment.md) for the full comparison,
 the security model behind bring-your-own-key, and what changes on a shared
 instance.
 
@@ -88,6 +92,15 @@ export QTCAP_LLM_PROVIDER=ollama    && export QTCAP_LLM_MODEL=llama3.1:8b  # loc
 15-document, ~43,000-word corpus. Returns citations, a grounding score, the retrieved
 passages, and a stage-by-stage trace. Teaches: retrieval correctness, groundedness,
 citation discipline, out-of-corpus refusal.
+
+Trainees can **add their own documents** from the console — markdown, text, CSV, JSON
+or HTML — and ask questions against them. An upload belongs to the browser that made
+it: it is held in memory under an opaque per-browser corpus id, never written to disk,
+and never visible to anyone else using the same instance. Every uploaded document is
+scanned by the IN-07 document guard on the way in and its findings are shown in the
+list; a poisoned document is **flagged, not blocked**, because a file you cannot load
+is a file you cannot test against. Retrieved passages from an upload are labelled
+`user-upload` in the evidence panel, in the trace, and inside the prompt itself.
 
 **2 — Single tool-calling agent.** Eleven tools covering live quotes, option chains,
 futures, FX, Black-Scholes pricing, Greeks, implied volatility, margin, payoffs and
@@ -128,8 +141,11 @@ python tools/fetch_live_data.py --check  # connectivity check only
 | Red — injection & jailbreak | 47 | instruction override, persona attacks, prompt extraction, privilege escalation, obfuscation |
 | Red — leakage & tool abuse | 41 | PII redaction, credential exfiltration, path traversal, SSRF, SQL, resource exhaustion, context poisoning |
 | Red — financial harm | 33 | investment advice, guaranteed returns, market-abuse facilitation, hallucination, numerical integrity |
-| UI (Playwright) | 31 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
-| Hosting security (pytest) | 25 | key redaction, SSRF allowlist, per-request isolation, rate limiting, findings redaction |
+| UI (Playwright) | 37 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
+| Hosting security (pytest) | 37 | key redaction, SSRF allowlist, per-request isolation, rate limiting, findings redaction, custom-domain host policy, per-browser document isolation |
+| Documents (pytest) | 30 | corpus isolation, provenance labelling, poisoned-document detection, format handling, upload limits |
+| IEEE harness (pytest) | 28 | every workbook row bound, oracles independent of the app, RAGAS proxies directional |
+| IEEE 829 workbook | 317 | the full manual suite, executed and written back into the spreadsheet — see below |
 
 ```bash
 ./test.sh fast       # YAML runner, plain output, fastest
@@ -160,8 +176,9 @@ Tests are **YAML, not Python** — a manual tester adds one without writing code
 
 ## Guardrails, and proving they matter
 
-Twelve controls — six on input (injection, jailbreak, extraction, tool abuse, PII, scope)
-and six on output (PII, secrets, advice, predictions, disclaimers, market abuse).
+Thirteen controls — seven on input (injection, jailbreak, extraction, tool abuse, PII,
+scope, and IN-07 for documents entering the corpus) and six on output (PII, secrets,
+advice, predictions, disclaimers, market abuse).
 
 All of them can be switched off:
 
@@ -178,16 +195,72 @@ classification, narrow resource-exhaustion patterns, and tool schemas that ignor
 arguments. Each is written as a passing test asserting real behaviour, with a
 `# KNOWN GAP:` comment saying what a hardened build should do.
 
+## Adding your own documents
+
+```bash
+# from the console: RAG Assistant -> Knowledge base -> drop files
+# or over the API, with your own corpus id:
+curl -X POST localhost:8000/api/rag/documents \
+     -H 'Content-Type: application/json' -H 'X-QTCAP-Corpus: my-browser' \
+     -d '{"filename":"desk-notes.md","content":"## Lot policy\n\nFour lots overnight, no more."}'
+curl localhost:8000/api/rag/documents -H 'X-QTCAP-Corpus: my-browser'
+```
+
+Ten documents per corpus, 200KB each, held in memory with a six-hour idle
+expiry. The shipped suites run **without** a corpus header, so an upload can
+never move a blue-team result — which is itself asserted in
+`tests/test_documents.py`.
+
+To add a document to the **curated** corpus for everyone — the trainer's job,
+not a trainee's — drop a markdown file into `knowledge_base/` with `doc_id`,
+`title`, `category` and `authority` front matter and restart. That path is
+deliberately a file on disk and a restart, because changing what a whole class
+retrieves should be a deployment, not a click.
+
 ## Documentation
 
 | Document | For |
 |---|---|
 | [Trainee handbook](docs/00-trainee-handbook.md) | **Start here** — ten steps from first run to final report |
 | [Architecture](docs/01-architecture.md) | How the pieces fit, and why each one is built to be testable |
-| [Lab exercises](docs/02-lab-exercises.md) | Thirteen graded exercises with seeded defects |
+| [Lab exercises](docs/02-lab-exercises.md) | Fourteen graded exercises with seeded defects |
 | [Test case spec](docs/test-case-spec.md) | Complete YAML format and check vocabulary |
 | [Facilitator guide](docs/03-facilitator-guide.md) | Running this as a five-day course |
 | [Deployment](docs/04-deployment.md) | Free hosting, bring-your-own-key, and what changes on a shared instance |
+| [IEEE 829 suite](docs/05-ieee-suite.md) | Executing the 317-case workbook and reading its failures |
+
+## The IEEE 829 workbook
+
+`tests/ieee/Capital_Markets_GenAI_Agent_Test_Suite_IEEE.xlsx` holds 317 manual
+test cases in IEEE 829 form — 179 for a GenAI copilot, 138 for a trading agent,
+across 30 requirement areas from RAGAS metrics to human-in-the-loop approval
+gates. Every row is executable:
+
+```bash
+python tools/run_ieee_suite.py                    # all 317, about a minute
+python tools/run_ieee_suite.py --category G06     # one category
+python tools/run_ieee_suite.py --id TC_G_G04_046  # one case
+```
+
+The run writes **Status**, **Actual Result**, **Defects** and **Remarks** back
+into every row of a copy of the sheet, and adds an Execution Summary and a
+Defect Register.
+
+**It does not all pass, on purpose.** A representative run:
+
+| Verdict | Cases | |
+|---|---|---|
+| Pass | 177 | the expected result was observed |
+| Fail | 62 | a real defect, with the evidence attached |
+| Fail (expected) | 71 | a requirement this system has no implementation for |
+| Blocked | 7 | a live market feed was unreachable — not a pass |
+
+Eighteen distinct defects sit behind those failures, each named in the Defect
+Register with the cases that prove it. The financial answer key
+(`tests/ieee/oracles.py`) is implemented from first principles and imports
+nothing from `app/`, and the twelve RAGAS metrics are deterministic lexical
+proxies rather than LLM judgements — both choices are explained in
+[docs/05-ieee-suite.md](docs/05-ieee-suite.md).
 
 ## Seeded defects
 

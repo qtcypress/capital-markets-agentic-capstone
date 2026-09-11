@@ -22,8 +22,24 @@ function saveBackend() {
   try { localStorage.setItem(BK, JSON.stringify(BACKEND)); } catch { /* ignore */ }
 }
 
+/* ---------------- this browser's own corpus ----------------
+   Documents a trainee adds belong to their browser, not to the instance, so
+   they are addressed by an opaque id generated here and sent as a header. The
+   id identifies a bucket of documents and nothing else — no account, no name.
+   Lose it (clear storage, open a private window) and the documents are simply
+   gone, which is the right failure mode for a training corpus. */
+const CK = "qtcap.corpus";
+let CORPUS_ID = "";
+try {
+  CORPUS_ID = localStorage.getItem(CK) || "";
+} catch { /* storage unavailable */ }
+if (!/^[A-Za-z0-9_-]{8,64}$/.test(CORPUS_ID)) {
+  CORPUS_ID = (crypto?.randomUUID?.() || `c${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  try { localStorage.setItem(CK, CORPUS_ID); } catch { /* in-memory for this tab only */ }
+}
+
 function backendHeaders() {
-  const h = { "X-LLM-Provider": BACKEND.provider || "stub" };
+  const h = { "X-LLM-Provider": BACKEND.provider || "stub", "X-QTCAP-Corpus": CORPUS_ID };
   if (BACKEND.model) h["X-LLM-Model"] = BACKEND.model;
   if (BACKEND.key) h["X-LLM-Key"] = BACKEND.key;
   return h;
@@ -128,14 +144,133 @@ $("ragSubmit").addEventListener("click", async () => {
     metric("citations", (body.citations || []).join(",") || "none", (body.citations || []).length ? "good" : "bad"),
     metric("guard-in", body.input_guard?.controls_triggered?.join(",") || "clean", guardTone(body.input_guard)),
     metric("guard-out", body.output_guard?.action || "n/a", guardTone(body.output_guard)),
+    (body.uploaded_sources || []).length
+      ? metric("your docs", body.uploaded_sources.join(","), "warn") : "",
   ].join("");
+  $("ragContexts").dataset.uploaded = (body.uploaded_sources || []).join(",");
   $("ragContexts").innerHTML = (body.contexts || []).map((c) => `
     <div class="ctx" data-doc="${esc(c.doc_id)}">
-      <div class="ctx-head"><span class="ctx-doc">${esc(c.doc_id)} · ${esc(c.section)}</span>
+      <div class="ctx-head"><span class="ctx-doc">${esc(c.doc_id)} · ${esc(c.section)}${
+        c.authority === "user-upload" ? ' <span class="badge-up" data-testid="ctx-uploaded">your upload</span>' : ""
+      }</span>
         <span>score ${c.score} · rank ${c.rank} · ${esc(c.authority)}</span></div>
       <div class="ctx-body">${esc(c.text)}</div></div>`).join("") || '<div class="ctx">no context retrieved</div>';
   renderTrace($("ragTrace"), body.trace);
 });
+
+
+/* ---------------- knowledge base: documents this browser added ----------------
+   Nothing here is persisted server-side. The list is re-read from the API after
+   every change rather than tracked locally, so what the panel shows is what the
+   retriever will actually search. */
+const DOC_MAX_BYTES = 200_000;
+
+function docError(message) {
+  const box = $("docError");
+  if (!box) return;
+  box.textContent = message || "";
+  box.hidden = !message;
+}
+
+function renderDocs(payload) {
+  const list = $("docList");
+  if (!list) return;
+  const docs = payload?.documents || [];
+  const stats = payload?.stats || {};
+  list.innerHTML = docs.map((d) => `
+    <li class="doc" data-doc="${esc(d.doc_id)}" data-flagged="${d.flagged ? "true" : "false"}">
+      <div class="doc-main">
+        <span class="doc-id">${esc(d.doc_id)}</span>
+        <span class="doc-name" title="${esc(d.filename)}">${esc(d.filename)}</span>
+        <span class="doc-meta">${d.chunks} chunk${d.chunks === 1 ? "" : "s"} · ${d.words} words</span>
+      </div>
+      ${d.flagged ? `<div class="doc-flags" data-testid="doc-flags">
+        ⚠ ${d.findings.map((f) => `${esc(f.control)} ${esc(f.name)}`).join(" · ")}
+        <span class="doc-flags-note">Loaded anyway — ask a question and watch what the pipeline does with it.</span>
+      </div>` : ""}
+      <button class="ghost doc-remove" data-remove="${esc(d.doc_id)}"
+              aria-label="Remove ${esc(d.filename)}">Remove</button>
+    </li>`).join("");
+  const panel = $("docPanel");
+  if (panel) panel.dataset.state = docs.length ? "loaded" : "empty";
+  if (panel) panel.dataset.docs = String(docs.length);
+  const foot = $("docsFoot");
+  if (foot) foot.hidden = docs.length === 0;
+  const count = $("docCount");
+  if (count) {
+    count.textContent = `15 shipped · ${docs.length} yours${stats.chunks ? ` · ${stats.chunks} chunks` : ""}`;
+    count.className = `pill ${docs.some((d) => d.flagged) ? "warn" : docs.length ? "good" : ""}`;
+  }
+}
+
+async function loadDocs() {
+  const { body } = await api("/api/rag/documents");
+  renderDocs(body);
+}
+
+async function uploadFiles(files) {
+  docError("");
+  const panel = $("docPanel");
+  if (panel) panel.dataset.state = "uploading";
+  const problems = [];
+  for (const file of Array.from(files || [])) {
+    if (file.size > DOC_MAX_BYTES) {
+      problems.push(`${file.name}: ${Math.round(file.size / 1024)}KB is over the 200KB limit`);
+      continue;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch {
+      problems.push(`${file.name}: could not be read`);
+      continue;
+    }
+    const { status, body } = await api("/api/rag/documents", {
+      method: "POST",
+      body: JSON.stringify({ filename: file.name, content: text }),
+    });
+    if (status !== 201) problems.push(`${file.name}: ${esc(body.detail || body.message || `HTTP ${status}`)}`);
+  }
+  await loadDocs();
+  if (problems.length) docError(problems.join(" — "));
+  loadStatus();
+}
+
+const dz = $("dropzone");
+if (dz) {
+  const picker = $("docFile");
+  dz.addEventListener("click", () => picker.click());
+  dz.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); picker.click(); }
+  });
+  picker.addEventListener("change", () => { uploadFiles(picker.files); picker.value = ""; });
+  ["dragenter", "dragover"].forEach((evt) =>
+    dz.addEventListener(evt, (e) => { e.preventDefault(); dz.dataset.over = "true"; }));
+  ["dragleave", "drop"].forEach((evt) =>
+    dz.addEventListener(evt, (e) => { e.preventDefault(); dz.dataset.over = "false"; }));
+  dz.addEventListener("drop", (e) => uploadFiles(e.dataTransfer?.files));
+}
+
+const docList = $("docList");
+if (docList) {
+  docList.addEventListener("click", async (e) => {
+    const id = e.target?.dataset?.remove;
+    if (!id) return;
+    await api(`/api/rag/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadDocs();
+    loadStatus();
+  });
+}
+
+const docClear = $("docClear");
+if (docClear) {
+  docClear.addEventListener("click", async () => {
+    await api("/api/rag/documents", { method: "DELETE" });
+    docError("");
+    await loadDocs();
+    loadStatus();
+  });
+}
 
 /* ---------------- Single agent ---------------- */
 $("agentSubmit").dataset.label = "Run agent";
@@ -474,7 +609,9 @@ async function loadStatus() {
   $("pillProvider").className = `pill ${BACKEND.provider === "stub" ? "" : "good"}`;
   $("pillProvider").dataset.provider = BACKEND.provider;
   $("pillMarket").textContent = `market: ${body.market_mode} · ${body.mode}`;
-  $("pillKb").textContent = `kb: ${body.knowledge_chunks} chunks · ${body.tools} tools · ${body.issues_open} open`;
+  const mine = Number($("docPanel")?.dataset.docs || 0);
+  $("pillKb").textContent = `kb: ${body.knowledge_chunks} chunks${mine ? ` +${mine} of yours` : ""}`
+    + ` · ${body.tools} tools · ${body.issues_open} open`;
   const anyOff = ["ragGuard", "agentGuard", "multiGuard"].some((id) => $(id) && !$(id).checked);
   $("pillGuard").textContent = `guardrails: ${anyOff ? "OFF on a panel" : "on"}`;
   $("pillGuard").className = `pill ${anyOff ? "bad" : "good"}`;
@@ -486,3 +623,4 @@ async function loadStatus() {
 });
 
 loadStatus(); loadTools(); loadMcp(); loadKb(); refreshMode(); loadSuites(); loadIssues(); loadProviders();
+loadDocs();

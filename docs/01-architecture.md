@@ -167,9 +167,14 @@ recorded rather than silently tolerated.
 
 ### Guardrails are switchable
 
-`app/guardrails/rules.py` holds twelve controls, each with an id, a severity, and
-an action (`allow`, `flag`, `sanitize`, `block`). `QTCAP_VULNERABLE_MODE=1`
+`app/guardrails/rules.py` holds thirteen controls, each with an id, a severity,
+and an action (`allow`, `flag`, `sanitize`, `block`). `QTCAP_VULNERABLE_MODE=1`
 downgrades every block to a flag.
+
+IN-07 is the odd one out: it scans a document entering the corpus rather than a
+question entering the pipeline, and its action is `flag` in every mode. A
+document that cannot be loaded cannot be tested against, and the red-team labs
+need to load exactly the documents this control objects to.
 
 **Testing consequence:** this is the most important design decision in the
 project for red-team training. Seven cases run with `vulnerable_mode: true` and
@@ -181,6 +186,22 @@ The controls are pattern-based, which is honest rather than ideal: three known
 gaps are documented in the suites. Pattern matching catches the attacks it knows
 and misses novel phrasing — a real property of real systems, and better taught
 than hidden.
+
+### Uploaded documents belong to a browser, not to the instance
+
+`app/rag/corpus.py` keeps per-caller document overlays in memory, addressed by an
+opaque id the console generates and sends as `X-QTCAP-Corpus`. A query carrying
+no such header retrieves from the fifteen curated documents and nothing else.
+`RAGPipeline.answer(corpus=...)` swaps the retriever for that caller's overlay
+for the duration of one call; the shared `VectorStore` is never mutated.
+
+**Testing consequence:** "whose data is in the index?" is the first question to
+ask about any multi-tenant RAG system, and here the answer is enforced in code
+and asserted in `tests/test_documents.py` rather than promised in a README. The
+interesting cases are not the happy path — they are one student's document
+staying out of another's retrieval, an upload not moving a shipped blue-team
+result, and an uploaded passage staying distinguishable from a curated one all
+the way into the prompt (`| UNVERIFIED USER UPLOAD`).
 
 ### The UI publishes state, not just prose
 

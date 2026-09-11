@@ -101,33 +101,53 @@ def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
 
 def chunk_document(path: Path) -> list[Chunk]:
     """Split a markdown doc on `##` headings; each section becomes one chunk."""
-    raw = path.read_text(encoding="utf-8")
+    return chunk_markdown(path.read_text(encoding="utf-8"), source=path.name, stem=path.stem)
+
+
+def chunk_markdown(
+    raw: str,
+    *,
+    source: str,
+    stem: str,
+    doc_id: str | None = None,
+    category: str | None = None,
+    authority: str | None = None,
+    min_preamble_words: int = 25,
+    min_section_words: int = 12,
+) -> list[Chunk]:
+    """Chunk markdown text that may have come from a file or from an upload.
+
+    The curated corpus and a document a trainee adds at runtime go through
+    exactly this function, so a retrieval failure on an uploaded document is the
+    same class of failure as one on a shipped document — which is the point of
+    letting them upload at all.
+    """
     meta, body = _parse_frontmatter(raw)
-    doc_id = meta.get("doc_id") or path.stem.upper()
-    title = meta.get("title") or path.stem.replace("-", " ").title()
-    category = meta.get("category", "general")
-    authority = meta.get("authority", "educational")
+    doc_id = doc_id or meta.get("doc_id") or stem.upper()
+    title = meta.get("title") or stem.replace("-", " ").replace("_", " ").strip().title()
+    category = category or meta.get("category", "general")
+    authority = authority or meta.get("authority", "educational")
 
     parts = re.split(r"^##\s+(.+)$", body, flags=re.MULTILINE)
     chunks: list[Chunk] = []
     preamble = parts[0].strip()
     preamble = re.sub(r"^#\s+.*$", "", preamble, flags=re.MULTILINE).strip()
-    if len(preamble.split()) > 25:
-        chunks.append(_mk_chunk(doc_id, path, title, "Overview", category, authority, preamble, 0))
+    if len(preamble.split()) > min_preamble_words:
+        chunks.append(_mk_chunk(doc_id, source, title, "Overview", category, authority, preamble, 0))
     for i in range(1, len(parts), 2):
         section, text = parts[i].strip(), parts[i + 1].strip()
-        if len(text.split()) < 12:
+        if len(text.split()) < min_section_words:
             continue
-        chunks.append(_mk_chunk(doc_id, path, title, section, category, authority, text, len(chunks)))
+        chunks.append(_mk_chunk(doc_id, source, title, section, category, authority, text, len(chunks)))
     return chunks
 
 
-def _mk_chunk(doc_id, path, title, section, category, authority, text, position) -> Chunk:
+def _mk_chunk(doc_id, source, title, section, category, authority, text, position) -> Chunk:
     slug = re.sub(r"[^a-z0-9]+", "-", section.lower()).strip("-")[:48]
     return Chunk(
         chunk_id=f"{doc_id}--{position:02d}--{slug}",
         doc_id=doc_id,
-        source=path.name,
+        source=source,
         title=title,
         section=section,
         category=category,

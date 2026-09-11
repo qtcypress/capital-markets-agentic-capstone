@@ -20,7 +20,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..llm.session import redact
 
@@ -34,6 +34,99 @@ def _int_env(name: str, default: int) -> int:
 
 def public_mode() -> bool:
     return os.environ.get("QTCAP_PUBLIC_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ---------------------------------------------------------------------------
+# Custom domain
+# ---------------------------------------------------------------------------
+# Serving the class from your own subdomain — capstone.qualitythought.in rather
+# than <service>.onrender.com — is DNS plus one CNAME, and needs no code at all.
+# What *does* need code is the tidy-up afterwards:
+#
+#   * the platform hostname keeps working forever, so the same app answers on
+#     two URLs. Students bookmark whichever one they were sent, screenshots in
+#     bug reports disagree, and a finding filed against one is hard to reproduce
+#     on the other. QTCAP_CANONICAL_HOST redirects every other hostname to the
+#     one you handed out.
+#   * a hostname nobody configured should not be served at all. Anyone can point
+#     a DNS record of their own at a hosting platform; without a host check your
+#     app answers under their name. QTCAP_ALLOWED_HOSTS closes that.
+#
+# Both are opt-in. Unset, nothing changes — which is what a laptop wants.
+
+def _host_of(value: str) -> str:
+    """Normalise a configured or received host: no scheme, no port, lowercase."""
+    host = (value or "").strip().lower()
+    if "//" in host:
+        host = host.split("//", 1)[1]
+    host = host.split("/", 1)[0].strip()
+    # Strip a port, but leave a bracketed IPv6 literal intact.
+    if host.startswith("["):
+        return host
+    return host.split(":", 1)[0]
+
+
+def canonical_host() -> str:
+    """The one hostname this instance should be reached by, or '' for none."""
+    return _host_of(os.environ.get("QTCAP_CANONICAL_HOST", ""))
+
+
+def allowed_hosts() -> set[str]:
+    """Hostnames this instance will answer to.
+
+    Empty means "answer to anything", which is the local default. When a
+    canonical host is set it is always allowed, as are the loopback names a
+    health check and the UI tests use.
+    """
+    configured = {
+        _host_of(part)
+        for part in os.environ.get("QTCAP_ALLOWED_HOSTS", "").split(",")
+        if _host_of(part)
+    }
+    if not configured:
+        return set()
+    canonical = canonical_host()
+    if canonical:
+        configured.add(canonical)
+    configured.update({"localhost", "127.0.0.1", "testserver", "[::1]"})
+    return configured
+
+
+def host_allowed(host: str) -> bool:
+    allowed = allowed_hosts()
+    if not allowed:
+        return True
+    received = _host_of(host)
+    if received in allowed:
+        return True
+    # A leading dot in configuration means "this domain and any subdomain",
+    # so one entry covers preview deployments under the same zone.
+    return any(
+        entry.startswith(".") and (received == entry[1:] or received.endswith(entry))
+        for entry in allowed
+    )
+
+
+def canonical_redirect(request: Request) -> RedirectResponse | None:
+    """Send a GET/HEAD arriving on any other hostname to the canonical one.
+
+    Only safe methods are redirected. Bouncing a POST across hostnames loses the
+    per-request model key the console sends in a header, and the student sees a
+    puzzling failure rather than a redirect — so a write on the wrong hostname
+    is served where it landed.
+    """
+    canonical = canonical_host()
+    if not canonical or request.method not in {"GET", "HEAD"}:
+        return None
+    received = _host_of(request.headers.get("host", ""))
+    if not received or received == canonical:
+        return None
+    # Never redirect the health check: the platform probes the service by its
+    # own hostname, and a 308 there reads as an unhealthy deploy.
+    if request.url.path == "/api/health":
+        return None
+    target = request.url.replace(netloc=canonical, scheme="https")
+    return RedirectResponse(str(target), status_code=308)
 
 
 class RateLimiter:
@@ -83,15 +176,33 @@ def client_id(request: Request) -> str:
 
 
 async def guard_request(request: Request, call_next):
-    """Body cap, rate limit, and outbound redaction in one middleware."""
+    """Host policy, body cap, rate limit and outbound redaction in one middleware."""
     if not public_mode():
         return await call_next(request)
+
+    # Host policy runs on every path, not just the API: the console itself is
+    # what a stray hostname would otherwise serve.
+    if not host_allowed(request.headers.get("host", "")):
+        return JSONResponse(
+            {"error": "unknown_host",
+             "message": "This hostname is not configured for this instance."},
+            status_code=421,
+        )
+    redirect = canonical_redirect(request)
+    if redirect is not None:
+        return redirect
 
     path = request.url.path
     if not path.startswith("/api/"):
         return await call_next(request)
 
-    max_body = _int_env("QTCAP_MAX_BODY_BYTES", 64_000)
+    # One endpoint legitimately carries a document rather than a question, so it
+    # gets its own cap. Everything else stays on the small one — an unbounded
+    # body on a 512MB free tier is a one-line denial of service.
+    if path == "/api/rag/documents" and request.method == "POST":
+        max_body = _int_env("QTCAP_MAX_UPLOAD_BYTES", 320_000)
+    else:
+        max_body = _int_env("QTCAP_MAX_BODY_BYTES", 64_000)
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > max_body:
         return JSONResponse(

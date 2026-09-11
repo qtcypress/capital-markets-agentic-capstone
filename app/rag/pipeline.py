@@ -64,6 +64,10 @@ class RAGResult:
     provider: str = ""
     model: str = ""
     error: str | None = None
+    # Doc ids of retrieved passages that came from a document this caller
+    # uploaded rather than from the curated corpus. The UI badges them, and a
+    # test can assert on them without parsing prose.
+    uploaded_sources: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +86,7 @@ class RAGResult:
             "provider": self.provider,
             "model": self.model,
             "error": self.error,
+            "uploaded_sources": self.uploaded_sources,
         }
 
 
@@ -106,14 +111,21 @@ class RAGPipeline:
         category: str | None = None,
         llm=None,
         enforce: bool | None = None,
+        corpus: str | None = None,
     ) -> RAGResult:
         """Answer one question.
 
-        `llm` and `enforce` are per-request so a shared hosted instance can serve
-        each student their own model backend and their own guardrail mode without
-        one of them changing the behaviour another sees.
+        `llm`, `enforce` and `corpus` are per-request so a shared hosted instance
+        can serve each student their own model backend, their own guardrail mode
+        and their own uploaded documents without one of them changing the
+        behaviour another sees.
         """
         llm = llm or self.llm
+        store = self.store
+        if corpus:
+            from .corpus import REGISTRY
+
+            store = REGISTRY.store_for(corpus)
         cfg = get_config()
         top_k = top_k or cfg.rag_top_k
         min_score = cfg.rag_min_score if min_score is None else min_score
@@ -144,7 +156,7 @@ class RAGPipeline:
 
         # 2. Retrieval ----------------------------------------------------
         t0 = time.perf_counter()
-        hits = self.store.search(safe_query, top_k=top_k, min_score=min_score, category=category)
+        hits = store.search(safe_query, top_k=top_k, min_score=min_score, category=category)
         result.contexts = [
             {
                 "chunk_id": h["chunk"].chunk_id, "doc_id": h["chunk"].doc_id,
@@ -156,9 +168,13 @@ class RAGPipeline:
             for h in hits
         ]
         result.retrieval_scores = [h["score"] for h in hits]
+        result.uploaded_sources = sorted(
+            {c["doc_id"] for c in result.contexts if c["authority"] == "user-upload"}
+        )
         step("retrieval", "hit" if hits else "empty", t0,
              retrieved=len(hits), top_score=result.retrieval_scores[0] if hits else 0.0,
-             doc_ids=[c["doc_id"] for c in result.contexts])
+             doc_ids=[c["doc_id"] for c in result.contexts],
+             uploaded=result.uploaded_sources)
 
         if not hits:
             result.answer = NO_CONTEXT_ANSWER
@@ -170,8 +186,14 @@ class RAGPipeline:
 
         # 3. Generation ---------------------------------------------------
         t0 = time.perf_counter()
+        # An uploaded passage is labelled as such inside the prompt. The model
+        # should not present a document a student pasted in two minutes ago with
+        # the same authority as the curated corpus, and it cannot make that
+        # distinction unless the context says which is which.
         context_text = "\n\n".join(
-            f"[doc {c['doc_id']} | {c['section']} | source {c['source']}]\n{c['text']}"
+            f"[doc {c['doc_id']} | {c['section']} | source {c['source']}"
+            + (" | UNVERIFIED USER UPLOAD" if c["authority"] == "user-upload" else "")
+            + f"]\n{c['text']}"
             for c in result.contexts
         )
         messages = [

@@ -12,7 +12,7 @@ give the same answer twice, that decides for itself which tool to call, and that
 can be talked out of its own rules by a sufficiently clever sentence.
 
 Work through the ten steps below in order. Each one takes between thirty minutes
-and two hours. By the end you will have run 383 tests, written your own, found
+and two hours. By the end you will have run 455 tests and execute a 317-case IEEE 829 workbook, written your own, found
 real defects, and produced a report you could hand to a client.
 
 ---

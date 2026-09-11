@@ -411,3 +411,54 @@ def groundedness(answer: str, context_chunks: list[str]) -> dict[str, Any]:
         "unsupported_terms": unsupported[:20],
         "context_chunks": len(context_chunks),
     }
+
+
+# ---------------------------------------------------------------------------
+# Document guard (IN-07)
+# ---------------------------------------------------------------------------
+# A document a trainee adds to the corpus is the most direct route into a RAG
+# system there is: whatever it says gets retrieved, pasted into the prompt, and
+# read by the model as reference material. The system prompt already tells the
+# model that context is data rather than instructions — this is the control that
+# checks whether a document is *trying* to be instructions, so the attempt is
+# visible at upload time instead of being discovered in an answer three
+# questions later.
+#
+# It flags, it does not block. A poisoned document you cannot load is a document
+# you cannot test against, and the red-team labs need to load exactly this kind
+# of file.
+def check_document(text: str, filename: str = "") -> list[Finding]:
+    """Scan a document being added to the corpus. Returns findings, never raises."""
+    findings: list[Finding] = []
+    findings += _scan(text, INJECTION_PATTERNS, "IN-07", "critical", "flag")
+    findings += _scan(text, JAILBREAK_PATTERNS, "IN-07", "high", "flag")
+    findings += _scan(text, EXTRACTION_PATTERNS, "IN-07", "high", "flag")
+    findings += _scan(text, TOOL_ABUSE_PATTERNS, "IN-07", "critical", "flag")
+    findings += _scan(text, MANIPULATION_PATTERNS, "IN-07", "critical", "flag")
+    findings += _scan(text, SECRET_PATTERNS, "OUT-02", "critical", "flag")
+    _, pii = redact_pii(text)
+    for f in pii:
+        f.action = "flag"
+    findings += pii
+
+    # Text addressed to the model rather than to a reader is the tell that
+    # survives paraphrase, so it is worth its own check.
+    for pattern, label in (
+        (r"\b(?:as an? |you are an? )(?:ai|assistant|language model)\b", "document addresses the model"),
+        (r"\bwhen (?:asked|answering|you (?:are )?asked)\b[^.]{0,60}\b(?:say|reply|respond|answer)\b",
+         "document scripts an answer"),
+        (r"\b(?:always|never) (?:say|mention|reveal|recommend|cite)\b", "document dictates behaviour"),
+    ):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            findings.append(Finding(control="IN-07", name=label, severity="high", action="flag",
+                                    evidence=m.group(0)[:120]))
+
+    seen: set[tuple[str, str]] = set()
+    unique: list[Finding] = []
+    for f in findings:
+        key = (f.control, f.name)
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    return unique

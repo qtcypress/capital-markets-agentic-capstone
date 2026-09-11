@@ -253,3 +253,166 @@ def test_every_keyed_provider_points_at_a_signup_page():
                       ("groq", "cerebras", "gemini", "openrouter", "mistral", "together")]:
         assert spec.console_url.startswith("https://"), key
         assert spec.default_model, key
+
+
+# ---------------------------------------------------------------------------
+# Custom domain
+# ---------------------------------------------------------------------------
+def test_host_policy_is_off_until_it_is_configured(monkeypatch):
+    """A laptop run, and a deployment that has not set a domain, answer to anything."""
+    from app.api import hosting
+
+    monkeypatch.delenv("QTCAP_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("QTCAP_CANONICAL_HOST", raising=False)
+    assert hosting.allowed_hosts() == set()
+    assert hosting.host_allowed("anything.example.com") is True
+
+
+def test_a_hostname_nobody_configured_is_refused(monkeypatch):
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_ALLOWED_HOSTS", "capstone.qualitythought.in")
+    monkeypatch.delenv("QTCAP_CANONICAL_HOST", raising=False)
+    assert hosting.host_allowed("capstone.qualitythought.in") is True
+    assert hosting.host_allowed("capstone.qualitythought.in:443") is True
+    assert hosting.host_allowed("CAPSTONE.QualityThought.in") is True
+    assert hosting.host_allowed("someone-elses-domain.example") is False
+    # Loopback stays allowed so the health check and the UI tests still run.
+    assert hosting.host_allowed("127.0.0.1") is True
+
+
+def test_a_leading_dot_covers_subdomains(monkeypatch):
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_ALLOWED_HOSTS", ".qualitythought.in")
+    assert hosting.host_allowed("capstone.qualitythought.in") is True
+    assert hosting.host_allowed("qualitythought.in") is True
+    assert hosting.host_allowed("qualitythought.in.evil.example") is False
+
+
+def test_the_canonical_host_is_allowed_without_being_listed_twice(monkeypatch):
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_ALLOWED_HOSTS", "capital-markets-agentic-capstone.onrender.com")
+    monkeypatch.setenv("QTCAP_CANONICAL_HOST", "https://capstone.qualitythought.in/")
+    assert hosting.canonical_host() == "capstone.qualitythought.in"
+    assert hosting.host_allowed("capstone.qualitythought.in") is True
+
+
+def _request(host: str, path: str = "/", method: str = "GET"):
+    from starlette.requests import Request
+
+    return Request({
+        "type": "http",
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", host.encode())],
+        "server": (host, 443),
+        "client": ("203.0.113.9", 51000),
+    })
+
+
+def test_the_platform_url_redirects_to_the_domain_you_handed_out(monkeypatch):
+    """Two live URLs for one class is a reproducibility problem, not a convenience."""
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_CANONICAL_HOST", "capstone.qualitythought.in")
+    response = hosting.canonical_redirect(
+        _request("capital-markets-agentic-capstone.onrender.com", "/api/providers"))
+    assert response is not None and response.status_code == 308
+    assert response.headers["location"] == "https://capstone.qualitythought.in/api/providers"
+
+    assert hosting.canonical_redirect(_request("capstone.qualitythought.in", "/")) is None
+
+
+def test_a_post_is_never_bounced_across_hostnames(monkeypatch):
+    """A redirected POST drops the student's per-request key header and fails oddly."""
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_CANONICAL_HOST", "capstone.qualitythought.in")
+    assert hosting.canonical_redirect(
+        _request("old.onrender.com", "/api/rag/query", method="POST")) is None
+
+
+def test_the_health_check_is_never_redirected(monkeypatch):
+    """The platform probes by its own hostname; a 308 there reads as a bad deploy."""
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_CANONICAL_HOST", "capstone.qualitythought.in")
+    assert hosting.canonical_redirect(
+        _request("capital-markets-agentic-capstone.onrender.com", "/api/health")) is None
+
+
+# ---------------------------------------------------------------------------
+# Uploaded documents over the API
+# ---------------------------------------------------------------------------
+def _client():
+    from fastapi.testclient import TestClient
+
+    from app.api.main import app
+    from app.rag.corpus import REGISTRY
+
+    REGISTRY.reset()
+    return TestClient(app)
+
+
+NOTE = "## Desk policy\n\nThe desk caps overnight NIFTY futures at four lots per trader."
+
+
+def test_a_document_uploaded_by_one_browser_is_not_served_to_another():
+    client = _client()
+    r = client.post("/api/rag/documents", json={"filename": "desk.md", "content": NOTE},
+                    headers={"X-QTCAP-Corpus": "browser-a"})
+    assert r.status_code == 201, r.text
+
+    mine = client.get("/api/rag/documents", headers={"X-QTCAP-Corpus": "browser-a"}).json()
+    theirs = client.get("/api/rag/documents", headers={"X-QTCAP-Corpus": "browser-b"}).json()
+    anonymous = client.get("/api/rag/documents").json()
+
+    assert len(mine["documents"]) == 1
+    assert theirs["documents"] == [] and anonymous["documents"] == []
+
+
+def test_a_query_without_the_corpus_header_never_sees_an_upload():
+    client = _client()
+    client.post("/api/rag/documents", json={"filename": "desk.md", "content": NOTE},
+                headers={"X-QTCAP-Corpus": "browser-a"})
+    body = client.post("/api/rag/query", json={"query": "overnight futures cap per trader"}).json()
+    assert body["uploaded_sources"] == []
+    assert all(c["authority"] != "user-upload" for c in body["contexts"])
+
+
+def test_one_browser_cannot_delete_another_browsers_document():
+    client = _client()
+    client.post("/api/rag/documents", json={"filename": "desk.md", "content": NOTE},
+                headers={"X-QTCAP-Corpus": "browser-a"})
+    r = client.delete("/api/rag/documents/UP-01", headers={"X-QTCAP-Corpus": "browser-b"})
+    assert r.status_code == 404
+    assert len(client.get("/api/rag/documents",
+                          headers={"X-QTCAP-Corpus": "browser-a"}).json()["documents"]) == 1
+
+
+def test_a_refused_document_answers_422_with_a_message_not_a_stack_trace():
+    client = _client()
+    r = client.post("/api/rag/documents", json={"filename": "report.pdf", "content": "%PDF-1.7"},
+                    headers={"X-QTCAP-Corpus": "browser-a"})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "PDF" in detail and "Traceback" not in detail
+
+
+def test_an_upload_endpoint_still_has_a_body_cap(monkeypatch):
+    from app.api import hosting
+
+    monkeypatch.setenv("QTCAP_PUBLIC_MODE", "1")
+    client = _client()
+    oversized = "x" * 400_000
+    r = client.post("/api/rag/documents", json={"filename": "huge.md", "content": oversized},
+                    headers={"X-QTCAP-Corpus": "browser-a"})
+    assert r.status_code in (413, 422), "an oversized document must be refused, not indexed"
+    assert hosting.public_mode() is True

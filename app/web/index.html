@@ -3,18 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QT Capital Markets — Agentic Capstone</title>
+<title>GenAI Testing — Capital Markets Agentic Capstone</title>
 <link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#4F46E5">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="logo">QT</span>
+  <a class="brand" href="/" data-testid="brand">
+    <img class="logo" src="/static/logo-mark.svg" alt="GenAItesting.online" width="40" height="40">
     <div>
       <h1>Capital Markets Agentic Capstone</h1>
       <p class="sub">RAG · Single Agent · MCP Multi-Agent — built for testing practice</p>
     </div>
-  </div>
+  </a>
   <div class="status" id="statusStrip">
     <span class="pill" id="pillProvider" data-testid="pill-provider">llm: …</span>
     <span class="pill" id="pillMarket" data-testid="pill-market">market: …</span>
@@ -55,6 +59,32 @@
           <button class="primary" id="ragSubmit" data-testid="rag-submit">Ask</button>
         </div>
         <div class="answer" id="ragAnswer" data-testid="rag-answer" aria-live="polite"></div>
+
+        <!-- ---- documents ------------------------------------------------ -->
+        <div class="docs" id="docPanel" data-testid="doc-panel" data-state="idle">
+          <div class="docs-head">
+            <h3>Knowledge base</h3>
+            <span class="pill" id="docCount" data-testid="doc-count">15 shipped · 0 yours</span>
+          </div>
+          <p class="hint">
+            Add your own documents and ask questions against them. They stay in
+            <strong>your browser's corpus only</strong> — nobody else using this instance sees
+            them, and nothing is written to the server's disk. Markdown, text, CSV, JSON or HTML,
+            up to 10 files.
+          </p>
+          <div class="dropzone" id="dropzone" data-testid="dropzone" tabindex="0"
+               role="button" aria-label="Add documents to the knowledge base">
+            <input type="file" id="docFile" data-testid="doc-file" multiple hidden
+                   accept=".md,.markdown,.txt,.text,.csv,.tsv,.json,.html,.htm,.rst">
+            <span><strong>Drop files here</strong> or click to choose</span>
+            <span class="dz-sub">.md · .txt · .csv · .json · .html — 200KB each</span>
+          </div>
+          <div class="doc-error" id="docError" data-testid="doc-error" hidden></div>
+          <ul class="doc-list" id="docList" data-testid="doc-list"></ul>
+          <div class="docs-foot" hidden id="docsFoot">
+            <button class="ghost" id="docClear" data-testid="doc-clear">Remove all</button>
+          </div>
+        </div>
       </div>
       <div class="col">
         <h3>Evidence</h3>

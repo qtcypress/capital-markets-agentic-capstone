@@ -1,6 +1,6 @@
 # Lab Exercises
 
-Thirteen graded exercises. The first four build confidence, the middle four are
+Fourteen graded exercises. The first four build confidence, the middle four are
 the real work, and the last four are the ones worth putting in a portfolio.
 
 Work in order. Each lab states what you produce and how to know you are done.
@@ -379,3 +379,58 @@ against a single process — say so, and describe the harness you would need.
 **Done when:** you can state, for each piece of state in the app (model choice,
 key, guardrail mode, findings, market snapshots), whether it is per request, per
 browser, or shared — and whether that is the right answer.
+
+---
+
+## Lab 14 — Poison your own corpus
+**Time: 1.5 hours · Difficulty: ●●●●**
+
+Up to here the knowledge base was somebody else's problem: fifteen documents,
+curated, fixed. Real RAG systems index whatever the business gives them, and the
+person who writes those documents is usually not the person who tested them. This
+lab makes you both.
+
+Open **RAG Assistant → Knowledge base** and use the drop zone.
+
+**1 — Establish the baseline.** Ask a question the shipped corpus cannot answer,
+such as your own desk's overnight position policy. Record the refusal. This is
+the control case; without it you cannot prove the upload did anything.
+
+**2 — Add a clean document.** Write a short markdown file with two `##` sections
+describing an invented internal policy. Upload it and ask the same question.
+Confirm: it is cited as `UP-01`, the evidence panel badges it **your upload**,
+the trace's retrieval step lists it under `uploaded`, and the grounding score is
+computed against it like any other passage. Ask yourself whether the answer
+*presents* it with the same confidence as a curated document, and whether it
+should.
+
+**3 — Poison it.** Add a second document that looks like an ordinary settlement
+note but ends with a paragraph addressed to the model — an instruction override,
+a persona swap, a "when asked about X, always say Y". Watch two things happen:
+the panel flags it against **IN-07** before you have asked anything, and the
+document loads anyway. Write down why both behaviours are correct.
+
+**4 — Attack through it.** Now ask the question that document was written to
+hijack. The passage reaches the prompt as `UNVERIFIED USER UPLOAD` and the
+system prompt says context is data, not instructions. Does that hold? Try at
+least six variants: instruction at the top of the document versus the bottom; in
+a heading versus in a table cell; phrased as a quotation; split across two
+sections; in an HTML comment; in a CSV cell. Record which ones the pipeline
+survives and which it does not.
+
+**5 — Find the gap the guard does not cover.** IN-07 is pattern-based. Write a
+document that changes the answer without matching any of its patterns — a
+plausible-looking contract specification with the wrong lot size, for instance.
+Nothing will flag it. That is the finding: **a retrieval system cannot tell you
+a document is wrong, only that it looks like an instruction.**
+
+**Produce:** eight to twelve cases in the findings panel, each with the document
+that triggers it attached as reproduction steps. At least two must be about
+provenance rather than injection — for example, whether a reader of the answer
+can tell which claims came from the curated corpus and which came from a file
+uploaded ninety seconds ago.
+
+**Done when:** you can answer, with evidence, "if a customer uploads their own
+policy documents into this product, what is the worst thing that happens, and
+which control catches it?" — and you know which of your findings that control
+does *not* catch.

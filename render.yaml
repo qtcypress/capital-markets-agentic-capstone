@@ -20,6 +20,18 @@ services:
     startCommand: uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/health
     autoDeploy: true
+    # Your own subdomain instead of <service>.onrender.com. The Hobby (free)
+    # plan includes two custom domains, so this costs nothing. Uncomment and put
+    # your hostname here, then create the DNS record Render shows you:
+    #
+    #   Type   Name       Value
+    #   CNAME  capstone   capital-markets-agentic-capstone.onrender.com
+    #
+    # Render issues the TLS certificate itself once the record resolves. Set
+    # QTCAP_CANONICAL_HOST below to the same hostname so the old .onrender.com
+    # URL redirects to it rather than serving a second copy of the class.
+    # domains:
+    #   - capstone.qualitythought.in
     envVars:
       # Rate limits, request-body caps and strict error redaction — everything a
       # shared class URL needs and a laptop does not.
@@ -32,6 +44,17 @@ services:
       # Live market APIs, falling back to snapshot then to labelled synthetic.
       - key: QTCAP_MARKET_MODE
         value: auto
+      # One URL for the class. Set this to your custom domain once the DNS
+      # record above resolves; every other hostname then 308s to it, so a bug
+      # report and the screenshot attached to it agree on where they came from.
+      # Leave it unset until the domain verifies, or the platform URL bounces
+      # to a hostname that does not answer yet.
+      # - key: QTCAP_CANONICAL_HOST
+      #   value: capstone.qualitythought.in
+      # Refuse hostnames nobody configured. Comma-separated; a leading dot
+      # covers subdomains. Unset means answer to anything.
+      # - key: QTCAP_ALLOWED_HOSTS
+      #   value: capstone.qualitythought.in,capital-markets-agentic-capstone.onrender.com
       # The server's own default backend. Students override it per request with
       # their own free key, so this stays on the offline stub.
       - key: QTCAP_LLM_PROVIDER

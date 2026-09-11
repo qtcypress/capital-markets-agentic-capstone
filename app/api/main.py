@@ -27,8 +27,12 @@ Routes
   GET  /api/mcp/servers       MCP server inventory and routing table
   POST /api/mcp/call          direct MCP tool call
   GET  /api/market/{symbol}   raw market payload with provenance
-  GET  /api/kb/stats          corpus statistics
+  GET  /api/kb/stats          corpus statistics (including this caller's uploads)
   POST /api/kb/search         raw retrieval, no generation
+  GET  /api/rag/documents     documents this browser has added to its corpus
+  POST /api/rag/documents     add a document to this browser's corpus
+  DELETE /api/rag/documents            remove every document this browser added
+  DELETE /api/rag/documents/{doc_id}   remove one
   GET  /api/tests/suites      available suites, categories and case counts
   POST /api/tests/run         run a suite subset in the browser
   GET  /api/issues            list filed findings
@@ -58,6 +62,7 @@ from ..llm.session import LLMSessionError, build_from_request, redact
 from ..market import get_fx_rate, get_option_chain, get_quote, list_supported_symbols
 from ..mcpsvc import MCPSession
 from ..rag import get_pipeline, get_store
+from ..rag.corpus import REGISTRY as CORPUS, DocumentError
 from .hosting import guard_request, public_mode, safe_error
 
 WEB_DIR = ROOT / "app" / "web"
@@ -278,10 +283,11 @@ def verify_llm(req: VerifyRequest, llm_headers=None,
 def rag_query(req: QueryRequest,
               x_llm_provider: str | None = Header(None, alias="X-LLM-Provider"),
               x_llm_model: str | None = Header(None, alias="X-LLM-Model"),
-              x_llm_key: str | None = Header(None, alias="X-LLM-Key")):
+              x_llm_key: str | None = Header(None, alias="X-LLM-Key"),
+              x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
     llm, choice = _llm_from_headers(x_llm_provider, x_llm_model, x_llm_key)
     result = _rag().answer(req.query, top_k=req.top_k, category=req.category,
-                           llm=llm, enforce=req.guardrails)
+                           llm=llm, enforce=req.guardrails, corpus=x_corpus)
     payload = result.to_dict()
     for c in payload["contexts"]:
         c["text"] = c["text"][:1200]
@@ -380,13 +386,57 @@ def market(symbol: str, kind: str = "quote", expiry: str | None = None):
 
 
 @app.get("/api/kb/stats")
-def kb_stats():
-    return get_store().stats()
+def kb_stats(x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    stats = CORPUS.store_for(x_corpus).stats()
+    stats["uploaded"] = CORPUS.stats(x_corpus)
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Documents a trainee adds to the corpus
+# ---------------------------------------------------------------------------
+# Every one of these is scoped by the X-QTCAP-Corpus header the console
+# generates per browser. No header, no documents — and one student's uploads are
+# never visible to another, which is asserted in tests/test_documents.py rather
+# than merely intended here.
+class DocumentRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=120)
+    content: str = Field(..., min_length=1, max_length=400_000)
+
+
+@app.get("/api/rag/documents")
+def list_documents(x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    return {"documents": CORPUS.documents(x_corpus), "stats": CORPUS.stats(x_corpus)}
+
+
+@app.post("/api/rag/documents", status_code=201)
+def add_document(req: DocumentRequest,
+                 x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    try:
+        doc = CORPUS.add(x_corpus, req.filename, req.content)
+    except DocumentError as exc:
+        # 422, not 500: the document was understood and refused, and the message
+        # says what to do about it.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"document": doc, "stats": CORPUS.stats(x_corpus),
+            "kb": CORPUS.store_for(x_corpus).stats()}
+
+
+@app.delete("/api/rag/documents/{doc_id}")
+def remove_document(doc_id: str, x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    if not CORPUS.remove(x_corpus, doc_id):
+        raise HTTPException(status_code=404, detail=f"No document {doc_id} in this corpus.")
+    return {"removed": doc_id, "stats": CORPUS.stats(x_corpus)}
+
+
+@app.delete("/api/rag/documents")
+def clear_documents(x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    return {"removed": CORPUS.clear(x_corpus), "stats": CORPUS.stats(x_corpus)}
 
 
 @app.post("/api/kb/search")
-def kb_search(req: SearchRequest):
-    hits = get_store().search(req.query, top_k=req.top_k, min_score=req.min_score)
+def kb_search(req: SearchRequest, x_corpus: str | None = Header(None, alias="X-QTCAP-Corpus")):
+    hits = CORPUS.store_for(x_corpus).search(req.query, top_k=req.top_k, min_score=req.min_score)
     return {
         "query": req.query,
         "count": len(hits),
@@ -526,6 +576,20 @@ def index():
     if not idx.exists():
         return {"message": "UI not built. API is available under /api."}
     return FileResponse(str(idx))
+
+
+# Browsers and link previewers ask for these at the site root, not under
+# /static, and a 404 on a favicon is the kind of thing nobody notices until a
+# trainee asks why the tab is blank.
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/logo.svg", include_in_schema=False)
+def brand_asset(request: Request):
+    asset = WEB_DIR / request.url.path.lstrip("/")
+    if not asset.exists():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(str(asset))
 
 
 @app.exception_handler(Exception)

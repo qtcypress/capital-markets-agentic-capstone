@@ -162,6 +162,76 @@ Koyeb, whose UI is click-through rather than file-driven.
 
 ---
 
+## Your own subdomain
+
+`capstone.qualitythought.in` instead of
+`capital-markets-agentic-capstone.onrender.com`. Render's Hobby (free) plan
+includes two custom domains, so this costs nothing.
+
+**1 — Tell Render the hostname.** Either uncomment the `domains:` block in
+`render.yaml` and push, or add it in the dashboard under
+**your service → Settings → Custom Domains → Add Custom Domain**.
+
+**2 — Create one DNS record** at whoever hosts the zone for your domain
+(GoDaddy, Cloudflare, Route 53, your web host's control panel):
+
+| Type | Name | Value | TTL |
+|---|---|---|---|
+| `CNAME` | `capstone` | `capital-markets-agentic-capstone.onrender.com` | default |
+
+The **Name** is the subdomain label only — `capstone`, not the full hostname;
+most registrars append the domain for you. Use a `CNAME`, not an `A` record:
+the platform's IP address changes and an `A` record silently rots. If you are
+on Cloudflare, set the record to **DNS only** (grey cloud) until Render reports
+the domain as verified, because proxying it first blocks the certificate check.
+
+**3 — Wait for verification.** Render polls DNS and issues the TLS certificate
+itself; usually a few minutes, up to an hour if your registrar is slow to
+publish. The dashboard shows *Verified* and the padlock works with no further
+action. Nothing about the app changes — no code, no rebuild.
+
+**4 — Make it the only URL.** The platform hostname keeps working forever, so
+the same class now has two live URLs. That is a reproducibility problem, not a
+convenience: a student files a finding against one and the screenshot in it
+came from the other. Set, in the service's environment:
+
+```
+QTCAP_CANONICAL_HOST = capstone.qualitythought.in
+```
+
+Every `GET` arriving on any other hostname then answers `308` to the canonical
+one. `POST` is deliberately *not* redirected — a redirected `POST` drops the
+per-request model key the console sends as a header, and the student sees a
+confusing failure instead of a redirect. The health check is never redirected
+either, because the platform probes by its own hostname.
+
+Set this only **after** the domain verifies. Point it at a hostname that does
+not resolve yet and you have redirected your working URL to a dead one.
+
+**5 — Optionally, refuse hostnames nobody configured.** Anyone can point a DNS
+record of their own at a hosting platform; without a host check your app
+answers under their name, which is a neat way to phish your own trainees.
+
+```
+QTCAP_ALLOWED_HOSTS = capstone.qualitythought.in,capital-markets-agentic-capstone.onrender.com
+```
+
+Comma-separated. A leading dot means "this domain and its subdomains"
+(`.qualitythought.in`). Loopback names stay allowed so the health check and the
+Playwright suite still run. Unset — the default — means answer to anything,
+which is what a laptop wants.
+
+Nine tests in `tests/test_hosting_security.py` cover this: the off-by-default
+behaviour, case and port normalisation, the subdomain wildcard, the redirect,
+and the two things that must *not* be redirected.
+
+> A subdomain of a domain you already own is the cheapest option and the one to
+> take. A brand-new domain is the same setup plus an `ALIAS`/`ANAME` record at
+> the apex, which not every registrar supports — if yours does not, point
+> `www` at the platform with a `CNAME` and redirect the apex to it.
+
+---
+
 ## Deploying anywhere else with the same image
 
 ```bash
