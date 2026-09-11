@@ -301,3 +301,139 @@ def test_only_the_latest_run_of_a_case_counts(monkeypatch):
     for _ in range(3):
         ram.post("/api/lab/run", json={"case_ids": ["TC_G_G16_183"]})
     assert ram.get("/api/lab/summary").json()["summary"]["executed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Built-in accounts: email and passcode, for instances with no Google client id
+# ---------------------------------------------------------------------------
+def test_a_passcode_is_never_stored_in_the_clear(tmp_path):
+    lab.create_account("ram@example.com", "Ram", "capstone2026")
+    raw = lab.db_path().read_bytes()
+    assert b"capstone2026" not in raw, "the database must hold a hash, never the passcode"
+    with lab._LOCK:
+        row = lab._connect().execute("SELECT * FROM accounts").fetchone()
+    assert len(row["passcode_hash"]) == 64 and row["iterations"] >= 100_000
+
+
+def test_signing_in_needs_the_right_passcode():
+    lab.create_account("ram@example.com", "Ram", "capstone2026")
+    assert lab.verify_account("ram@example.com", "capstone2026")["name"] == "Ram"
+    with pytest.raises(lab.AccountError):
+        lab.verify_account("ram@example.com", "capstone2027")
+
+
+def test_an_unknown_address_and_a_wrong_passcode_give_the_same_message():
+    """Which addresses have accounts is not something a stranger gets to enumerate."""
+    lab.create_account("ram@example.com", "Ram", "capstone2026")
+    with pytest.raises(lab.AccountError) as wrong:
+        lab.verify_account("ram@example.com", "nope12345")
+    with pytest.raises(lab.AccountError) as missing:
+        lab.verify_account("nobody@example.com", "nope12345")
+    assert str(wrong.value) == str(missing.value)
+
+
+def test_repeated_wrong_guesses_lock_the_account():
+    lab.create_account("ram@example.com", "Ram", "capstone2026")
+    for _ in range(lab.MAX_FAILED):
+        with pytest.raises(lab.AccountError):
+            lab.verify_account("ram@example.com", "wrongwrong")
+    with pytest.raises(lab.AccountError) as exc:
+        lab.verify_account("ram@example.com", "capstone2026")
+    assert "Too many attempts" in str(exc.value), "the lock must hold even for the right passcode"
+
+
+def test_a_short_passcode_is_refused():
+    with pytest.raises(lab.AccountError):
+        lab.create_account("ram@example.com", "Ram", "short")
+
+
+def test_an_address_cannot_be_registered_twice():
+    lab.create_account("ram@example.com", "Ram", "capstone2026")
+    with pytest.raises(lab.AccountError) as exc:
+        lab.create_account("RAM@example.com", "Impostor", "different123")
+    assert "already exists" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", ["", "notanemail", "no@domain", "a@b", "x" * 200 + "@y.com"])
+def test_a_malformed_address_is_refused(bad):
+    with pytest.raises(lab.AccountError):
+        lab.create_account(bad, "X", "passcode123")
+
+
+def test_sign_up_then_sign_in_through_the_api(client, monkeypatch):
+    created = client.post("/api/auth/signup", json={
+        "email": "priya@example.com", "name": "Priya", "passcode": "capstone2026"})
+    assert created.status_code == 201
+    assert created.json()["user"]["email"] == "priya@example.com"
+    assert client.get("/api/auth/me").json()["user"]["provider"] == "account"
+
+    from app.api.main import app
+
+    fresh = TestClient(app)
+    assert fresh.post("/api/auth/signin", json={"email": "priya@example.com",
+                                                "passcode": "wrongwrong"}).status_code == 401
+    assert fresh.post("/api/auth/signin", json={"email": "priya@example.com",
+                                                "passcode": "capstone2026"}).status_code == 200
+
+
+def test_accounts_work_on_a_public_instance_where_local_sign_in_does_not(monkeypatch):
+    """The point of this login: a hosted instance with no Google client id is still usable."""
+    monkeypatch.setenv("QTCAP_PUBLIC_MODE", "1")
+    from app.api.main import app
+
+    client = TestClient(app)
+    assert client.post("/api/auth/local", json={"name": "eve"}).status_code == 403
+    assert client.post("/api/auth/signup", json={
+        "email": "trainee@example.com", "passcode": "capstone2026"}).status_code == 201
+
+
+def test_the_account_page_carries_history_defects_and_totals(monkeypatch):
+    ram = new_client(monkeypatch, "ram")
+    ram.post("/api/lab/run", json={"case_ids": ["TC_G_G16_183", "TC_A_A02_011"]})
+    ram.post("/api/lab/defects", json={"title": "A finding", "suite": "rag"})
+
+    body = ram.get("/api/lab/account").json()
+    assert body["summary"]["executed"] == 2
+    assert len(body["history"]) == 2
+    assert len(body["defects"]) == 1
+    assert {"case_id", "status", "created_at"} <= set(body["history"][0])
+
+
+def test_the_csv_report_is_a_real_csv(monkeypatch):
+    import csv
+    import io
+
+    ram = new_client(monkeypatch, "ram")
+    ram.post("/api/lab/run", json={"case_ids": ["TC_G_G16_183"]})
+    rows = list(csv.reader(io.StringIO(ram.get("/api/lab/report.csv").text)))
+    assert rows[0][:5] == ["case_id", "suite", "area", "harness_status", "my_verdict"]
+    assert rows[1][0] == "TC_G_G16_183"
+
+
+def test_sign_in_attempts_are_rate_limited(monkeypatch):
+    """Sign-in is the one endpoint worth guessing at, so it gets its own budget."""
+    monkeypatch.setenv("QTCAP_PUBLIC_MODE", "1")
+    from app.api.hosting import LIMITER
+    from app.api.main import app
+
+    LIMITER.windows.clear()
+    LIMITER.auth_per_minute = 3
+    client = TestClient(app)
+    try:
+        codes = [client.post("/api/auth/signin",
+                             json={"email": "x@example.com", "passcode": "guessing123"}).status_code
+                 for _ in range(6)]
+        assert 429 in codes, "unlimited passcode guesses is not a login, it is a piñata"
+    finally:
+        LIMITER.auth_per_minute = 30
+        LIMITER.windows.clear()
+
+
+def test_sign_in_has_its_own_budget_not_the_heavy_one():
+    """A class behind one NAT must not lock itself out after eight people log in."""
+    from app.api.hosting import RateLimiter
+
+    limiter = RateLimiter()
+    assert limiter.auth_per_minute > limiter.heavy_per_minute
+    for _ in range(limiter.heavy_per_minute + 2):
+        assert limiter.check("shared-nat", bucket="auth")[0] is True

@@ -26,35 +26,34 @@ async function loadAuth() {
   LAB.user = body.user;
   LAB.config = body.config || {};
   renderAuth();
-  if (LAB.user) { loadSummary(); loadMyDefects(); }
+  if (LAB.user) { loadSummary(); loadMyDefects(); loadAccount(); }
   loadCatalogue();
   loadPublicDefects();
 }
 
 function renderAuth() {
+  const signedIn = !!LAB.user;
+  el("openSignin").hidden = signedIn;
+  el("openAccount").hidden = !signedIn;
+  if (signedIn) el("openAccount").textContent = LAB.user.name || LAB.user.email;
+
   const box = el("signinBox");
-  if (!box) return;
-  box.dataset.state = LAB.user ? "signed-in" : "signed-out";
-  el("signedIn").hidden = !LAB.user;
-  el("signedOut").hidden = !!LAB.user;
-  if (LAB.user) {
-    el("whoName").textContent = LAB.user.name || LAB.user.email;
-    el("whoMail").textContent = LAB.user.email;
-    return;
+  if (box) {
+    box.dataset.state = signedIn ? "signed-in" : "signed-out";
+    el("signedIn").hidden = !signedIn;
+    el("signedOut").hidden = signedIn;
+    if (signedIn) {
+      el("whoName").textContent = LAB.user.name || LAB.user.email;
+      el("whoMail").textContent = LAB.user.email;
+    }
   }
   el("localSignin").hidden = !LAB.config.local_enabled;
-  const hint = el("signinHint");
-  if (LAB.config.google_enabled) {
-    hint.textContent = LAB.config.allowed_domains?.length
-      ? `Sign in with a ${LAB.config.allowed_domains.join(" or ")} Google account.`
-      : "Sign in with Google. Your results and defects are kept against your account.";
-    mountGoogle();
-  } else if (LAB.config.local_enabled) {
-    hint.textContent = "Google sign-in is not configured on this instance, so offline sign-in "
-      + "is available. It is refused automatically on a hosted instance.";
-  } else {
-    hint.textContent = "Sign-in is not configured on this instance. Set QTCAP_GOOGLE_CLIENT_ID "
-      + "to enable Google sign-in.";
+  const gh = el("googleHint");
+  if (LAB.config.google_enabled) { gh.hidden = true; mountGoogle(); }
+  else {
+    gh.hidden = false;
+    gh.textContent = "Google sign-in is not configured on this instance, so use an email and "
+      + "passcode below.";
   }
 }
 
@@ -68,32 +67,185 @@ function mountGoogle() {
       const { status, body } = await api("/api/auth/google", {
         method: "POST", body: JSON.stringify({ credential: response.credential }),
       });
-      if (status === 200) { LAB.user = body.user; renderAuth(); loadSummary(); loadMyDefects(); loadCatalogue(); }
-      else el("signinHint").textContent = body.detail || "Sign-in failed.";
+      if (status === 200) signedInAs(body.user);
+      else el("acError").textContent = body.detail || "Sign-in failed.";
     },
   });
   window.google.accounts.id.renderButton(el("googleBtn"), { theme: "outline", size: "large" });
 }
-/* The GSI script loads async; poll briefly rather than racing it. */
 let gsiTries = 0;
 const gsiTimer = setInterval(() => {
   if (googleMounted || ++gsiTries > 40) return clearInterval(gsiTimer);
   if (!LAB.user && LAB.config?.google_enabled) mountGoogle();
 }, 250);
 
+function signedInAs(user) {
+  LAB.user = user;
+  el("signinModal").hidden = true;
+  el("acPasscode").value = "";
+  renderAuth();
+  loadSummary(); loadMyDefects(); loadCatalogue(); loadAccount();
+}
+
+/* The modal is reachable from the header, from the Test Lab and from My Account,
+   because "where do I sign in" should never need a hunt. */
+function openSignin() {
+  // Always open on "I have an account". The modal used to remember whichever
+  // mode you last used, so signing out and back in tried to register the same
+  // address again and told you it already existed — technically true, useless.
+  setMode(false);
+  el("acPasscode").value = "";
+  el("acError").textContent = "";
+  el("signinModal").hidden = false;
+  el("acEmail").focus();
+}
+["openSignin", "labSignin", "accountSignin"].forEach((id) =>
+  el(id)?.addEventListener("click", openSignin));
+el("acCancel")?.addEventListener("click", () => { el("signinModal").hidden = true; });
+el("signinModal")?.addEventListener("click", (e) => {
+  if (e.target.id === "signinModal") el("signinModal").hidden = true;
+});
+el("openAccount")?.addEventListener("click", () => {
+  document.querySelector('[data-testid="tab-account"]').click();
+});
+
+let signupMode = false;
+function setMode(signup) {
+  signupMode = signup;
+  el("modeSignup").classList.toggle("active", signup);
+  el("modeSignin").classList.toggle("active", !signup);
+  el("acNameRow").hidden = !signup;
+  el("acGo").textContent = signup ? "Create account" : "Sign in";
+  el("acPasscode").setAttribute("autocomplete", signup ? "new-password" : "current-password");
+  el("acHint").textContent = signup
+    ? `At least ${LAB.config.min_passcode || 8} characters. It is hashed before storage — this `
+      + "instance never holds your passcode, and it must not be your email password."
+    : "The passcode you chose when you created this account on this instance.";
+  el("acError").textContent = "";
+}
+el("modeSignup")?.addEventListener("click", () => setMode(true));
+el("modeSignin")?.addEventListener("click", () => setMode(false));
+
+async function submitAccount() {
+  const email = el("acEmail").value.trim();
+  const passcode = el("acPasscode").value;
+  if (!email || !passcode) { el("acError").textContent = "Email and passcode are both needed."; return; }
+  const path = signupMode ? "/api/auth/signup" : "/api/auth/signin";
+  const payload = signupMode
+    ? { email, passcode, name: el("acName").value.trim() }
+    : { email, passcode };
+  busy(el("acGo"), true);
+  const { status, body } = await api(path, { method: "POST", body: JSON.stringify(payload) });
+  busy(el("acGo"), false);
+  if (status === 200 || status === 201) return signedInAs(body.user);
+  el("acError").textContent = body.detail
+    || (status === 422 ? "Check the email address and passcode." : `Sign-in failed (HTTP ${status})`);
+}
+el("acGo")?.addEventListener("click", submitAccount);
+["acEmail", "acPasscode", "acName"].forEach((id) =>
+  el(id)?.addEventListener("keydown", (e) => { if (e.key === "Enter") submitAccount(); }));
+
 el("localGo")?.addEventListener("click", async () => {
   const { status, body } = await api("/api/auth/local", {
     method: "POST", body: JSON.stringify({ name: el("localName").value.trim() || "trainee" }),
   });
-  if (status === 200) { LAB.user = body.user; renderAuth(); loadSummary(); loadMyDefects(); loadCatalogue(); }
-  else el("signinHint").textContent = body.detail || "Sign-in failed.";
+  if (status === 200) signedInAs(body.user);
+  else el("acError").textContent = body.detail || "Sign-in failed.";
 });
 
 el("signOut")?.addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST" });
   LAB.user = null; renderAuth(); loadCatalogue();
   el("labDash").innerHTML = ""; el("myDefects").innerHTML = "";
+  el("accountBody").dataset.state = "signed-out";
+  loadAccount();
 });
+
+/* ---------------- my account ---------------- */
+/* Refresh on open. Rendering this page once at sign-in means a trainee runs
+   twenty cases, clicks My Account and reads "0 executed" — stale numbers on a
+   reporting page are worse than no numbers. */
+document.querySelector('[data-testid="tab-account"]')?.addEventListener("click", () => loadAccount());
+document.querySelector('[data-testid="tab-board"]')?.addEventListener("click", () => {
+  loadMyDefects(); loadPublicDefects();
+});
+
+async function loadAccount() {
+  const box = el("accountBody");
+  if (!box) return;
+  if (!LAB.user) {
+    box.dataset.state = "signed-out";
+    box.innerHTML = '<p class="hint">Sign in to see your account, your execution history and '
+      + 'your reports.</p><button class="primary" id="accountSignin2" '
+      + 'data-testid="account-signin">Sign in</button>';
+    el("accountSignin2")?.addEventListener("click", openSignin);
+    return;
+  }
+  const { body } = await api("/api/lab/account");
+  const s = body.summary || {};
+  const t = s.totals || {};
+  box.dataset.state = "signed-in";
+  box.dataset.executed = String(s.executed || 0);
+  box.innerHTML = `
+    <div class="acct-head">
+      <div>
+        <h3>${esc(body.user.name || body.user.email)}</h3>
+        <p class="hint mono">${esc(body.user.email)} · signed in via ${esc(body.user.provider)}</p>
+      </div>
+      <div class="acct-actions">
+        <a class="ghost" href="/api/lab/report" data-testid="dl-md">Report (markdown)</a>
+        <a class="ghost" href="/api/lab/report.csv" data-testid="dl-csv">Results (CSV)</a>
+        <button class="ghost" id="acctSignOut" data-testid="acct-signout">Sign out</button>
+      </div>
+    </div>
+    <div class="dash">
+      <div class="dashcard"><h4>Executed</h4>
+        <div class="dashbig" data-testid="acct-executed">${s.executed || 0}</div>
+        <div class="dashlegend"><span class="ok">${t.Pass || 0} pass</span>
+          <span class="bad">${t.Fail || 0} fail</span>
+          <span class="warn">${t["Fail (expected)"] || 0} gap</span>
+          <span class="mute">${t.Blocked || 0} blocked</span></div></div>
+      <div class="dashcard"><h4>Defects</h4>
+        <div class="dashbig" data-testid="acct-defects">${s.defects?.total || 0}</div>
+        <div class="dashlegend"><span>${s.defects?.published || 0} published</span></div></div>
+      <div class="dashcard"><h4>Coverage</h4>
+        <div class="dashbig">${Math.round(((s.executed || 0) / 377) * 100)}%</div>
+        <div class="dashlegend"><span>of the 377 published cases</span></div></div>
+      <div class="dashcard"><h4>Last run</h4>
+        <div class="dashbig sm">${s.last_run_at
+          ? new Date(s.last_run_at * 1000).toLocaleString() : "—"}</div></div>
+    </div>
+
+    <h3>Execution history</h3>
+    <div class="scroll"><table class="acct-table" data-testid="acct-history">
+      <thead><tr><th>Case</th><th>Suite</th><th>Area</th><th>Harness</th><th>My verdict</th>
+        <th>When</th></tr></thead>
+      <tbody>${(body.history || []).map((r) => `<tr>
+        <td class="mono">${esc(r.case_id)}</td><td>${esc(r.suite)}</td><td>${esc(r.area)}</td>
+        <td><span class="metric ${{ Pass: "ok", Fail: "bad", "Fail (expected)": "warn" }[r.status] || ""}">${esc(r.status)}</span></td>
+        <td>${r.verdict ? esc(r.verdict) : "—"}</td>
+        <td class="mono">${new Date(r.created_at * 1000).toLocaleString()}</td></tr>`).join("")
+        || '<tr><td colspan="6" class="hint">Nothing run yet — open the Test Lab.</td></tr>'}
+      </tbody></table></div>
+
+    <h3>My defects</h3>
+    <div class="scroll"><table class="acct-table" data-testid="acct-defects-table">
+      <thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Case</th><th>Published</th></tr></thead>
+      <tbody>${(body.defects || []).map((d) => `<tr>
+        <td class="mono">${esc(d.id)}</td><td>${esc(d.title)}</td>
+        <td>${esc(d.severity)}</td><td class="mono">${esc(d.case_id || "—")}</td>
+        <td>${d.published ? "yes" : "no"}</td></tr>`).join("")
+        || '<tr><td colspan="5" class="hint">No defects raised yet.</td></tr>'}
+      </tbody></table></div>
+
+    <p class="hint">This instance stores results in a SQLite file. On a free hosting tier that
+      disk is wiped by a redeploy — download your report before you finish.</p>`;
+  el("acctSignOut")?.addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    LAB.user = null; renderAuth(); loadCatalogue(); loadAccount();
+    el("labDash").innerHTML = "";
+  });
+}
 
 /* ---------------- dashboard ---------------- */
 async function loadSummary() {
@@ -264,6 +416,7 @@ async function runCases(ids, button) {
   if (status !== 200) return alert(body.detail || `Run failed (HTTP ${status})`);
   renderDash(body.summary);
   await loadCatalogue();
+  loadAccount();
 }
 
 async function markVerdict(caseId, verdict) {
@@ -371,4 +524,5 @@ async function loadPublicDefects() {
     </article>`).join("") || '<p class="hint">Nothing published yet.</p>';
 }
 
+setMode(false);
 loadAuth();

@@ -3,8 +3,8 @@
 A complete, runnable training project that takes a **manual tester with capital-markets
 domain knowledge** and turns them into a **tester of RAG and agentic AI systems**.
 
-Three applications, one live market-data layer, one knowledge corpus, and **499 tests, plus a 377-case IEEE 829 workbook**
-— 206 blue-team, 121 red-team, 45 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 30 test-lab — all
+Three applications, one live market-data layer, one knowledge corpus, and **520 tests, plus a 377-case IEEE 829 workbook**
+— 206 blue-team, 121 red-team, 49 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 47 test-lab — all
 green. The IEEE workbook is separate, and deliberately is not.
 
 ```
@@ -141,10 +141,10 @@ python tools/fetch_live_data.py --check  # connectivity check only
 | Red — injection & jailbreak | 47 | instruction override, persona attacks, prompt extraction, privilege escalation, obfuscation |
 | Red — leakage & tool abuse | 41 | PII redaction, credential exfiltration, path traversal, SSRF, SQL, resource exhaustion, context poisoning |
 | Red — financial harm | 33 | investment advice, guaranteed returns, market-abuse facilitation, hallucination, numerical integrity |
-| UI (Playwright) | 45 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
+| UI (Playwright) | 49 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
 | Hosting security (pytest) | 37 | key redaction, SSRF allowlist, per-request isolation, rate limiting, findings redaction, custom-domain host policy, per-browser document isolation |
 | Documents (pytest) | 30 | corpus isolation, provenance labelling, poisoned-document detection, format handling, upload limits |
-| Test lab (pytest) | 30 | session forgery, per-user isolation, defect publishing, no key ever stored |
+| Test lab (pytest) | 47 | accounts and passcode hashing, session forgery, per-user isolation, defect publishing, no key ever stored |
 | IEEE harness (pytest) | 30 | every workbook row bound, oracles independent of the app, RAGAS proxies directional |
 | IEEE 829 workbook | 377 | the full manual suite, executed and written back into the spreadsheet — see below |
 
@@ -238,6 +238,13 @@ with Google, runs cases against the three applications, marks their own verdict,
 raises defects and publishes the ones worth sharing to a board the class can
 read.
 
+- **Sign in from the header on any page.** Google when an instance is configured
+  for it, and an email-and-passcode account on every instance — so a deployment
+  with no Google client id is still fully usable. Passcodes are hashed with
+  PBKDF2 and never stored in the clear; the address is not verified, which the
+  docs say plainly rather than implying otherwise.
+- **My Account** — execution history, defects, coverage, and markdown/CSV report
+  downloads.
 - **Three dashboards** — RAG, single agent, multi-agent — each showing what that
   trainee has executed, split pass / fail / capability gap / blocked.
 - **Results are private** to the account that produced them. Defects start

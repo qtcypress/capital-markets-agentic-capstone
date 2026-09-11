@@ -610,6 +610,17 @@ class LocalSignIn(BaseModel):
     name: str = Field("trainee", min_length=1, max_length=40)
 
 
+class AccountSignUp(BaseModel):
+    email: str = Field(..., min_length=5, max_length=160)
+    name: str = Field("", max_length=80)
+    passcode: str = Field(..., min_length=8, max_length=200)
+
+
+class AccountSignIn(BaseModel):
+    email: str = Field(..., min_length=5, max_length=160)
+    passcode: str = Field(..., min_length=1, max_length=200)
+
+
 class VerdictRequest(BaseModel):
     case_id: str = Field(..., min_length=3, max_length=40)
     verdict: str = Field(..., pattern="^(pass|fail|blocked|not_run)$")
@@ -640,7 +651,10 @@ class RunRequest(BaseModel):
 
 @app.get("/api/auth/config")
 def auth_config():
-    return auth.auth_config()
+    config = auth.auth_config()
+    config["accounts_enabled"] = True
+    config["min_passcode"] = lab.MIN_PASSCODE
+    return config
 
 
 @app.post("/api/auth/google")
@@ -662,6 +676,48 @@ def auth_local(req: LocalSignIn, response: Response):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     _set_session_cookie(response, user)
     return {"user": user.public()}
+
+
+@app.post("/api/auth/signup", status_code=201)
+def auth_signup(req: AccountSignUp, response: Response, request: Request):
+    """Create an account on this instance: an email address and a passcode.
+
+    The passcode is hashed with PBKDF2 and never stored in the clear. The email
+    address is not verified — see the note in app/lab.py about what that does
+    and does not buy you.
+    """
+    _signup_limit(request)
+    try:
+        account = lab.create_account(req.email, req.name, req.passcode)
+    except lab.AccountError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    user = auth.User(email=account["email"], name=account["name"], provider="account")
+    _set_session_cookie(response, user)
+    return {"user": user.public()}
+
+
+@app.post("/api/auth/signin")
+def auth_signin(req: AccountSignIn, response: Response, request: Request):
+    _signup_limit(request)
+    try:
+        account = lab.verify_account(req.email, req.passcode)
+    except lab.AccountError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    user = auth.User(email=account["email"], name=account["name"], provider="account")
+    _set_session_cookie(response, user)
+    return {"user": user.public()}
+
+
+def _signup_limit(request: Request) -> None:
+    """Sign-in is the one endpoint worth guessing against, so it gets its own budget."""
+    from .hosting import LIMITER, client_id
+
+    allowed, limit, retry = LIMITER.check(client_id(request), bucket="auth")
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many sign-in attempts from this address. Try again in {retry}s.",
+            headers={"Retry-After": str(retry)})
 
 
 @app.get("/api/auth/me")
@@ -785,6 +841,48 @@ def lab_verdict(req: VerdictRequest, qtcap_session: str | None = Cookie(None)):
 def lab_summary(qtcap_session: str | None = Cookie(None)):
     user = _require_user(qtcap_session)
     return {"user": user.public(), "summary": lab.summary(user.email)}
+
+
+@app.get("/api/lab/account")
+def lab_account(qtcap_session: str | None = Cookie(None)):
+    """Everything the My Account page shows: profile, run history, defects, totals."""
+    user = _require_user(qtcap_session)
+    latest = lab.latest_results(user.email)
+    history = sorted(latest.values(), key=lambda r: r["created_at"], reverse=True)
+    return {
+        "user": user.public(),
+        "summary": lab.summary(user.email),
+        "defects": lab.my_defects(user.email),
+        "history": [
+            {"case_id": r["case_id"], "suite": r["suite"], "area": r["area"],
+             "status": r["status"], "verdict": r["verdict"], "remark": r["remark"][:300],
+             "actual": r["actual"][:300], "duration_ms": r["duration_ms"],
+             "created_at": r["created_at"]}
+            for r in history[:400]
+        ],
+    }
+
+
+@app.get("/api/lab/report.csv")
+def lab_report_csv(qtcap_session: str | None = Cookie(None)):
+    """The same report as a spreadsheet, because that is what gets emailed."""
+    import csv
+    import io
+
+    user = _require_user(qtcap_session)
+    latest = lab.latest_results(user.email)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["case_id", "suite", "area", "harness_status", "my_verdict",
+                     "duration_ms", "executed_at", "actual", "remark"])
+    for row in sorted(latest.values(), key=lambda r: r["case_id"]):
+        writer.writerow([row["case_id"], row["suite"], row["area"], row["status"],
+                         row["verdict"] or "", round(row["duration_ms"]),
+                         time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"])),
+                         row["actual"][:500], row["remark"][:500]])
+    return PlainTextResponse(
+        buffer.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=test-results.csv"})
 
 
 @app.get("/api/lab/report")

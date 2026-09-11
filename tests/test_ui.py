@@ -44,7 +44,13 @@ def _free_port() -> int:
 @pytest.fixture(scope="session")
 def server() -> str:
     port = _free_port()
-    env = {**os.environ, "QTCAP_LLM_PROVIDER": "stub"}
+    # A private database per run. Sharing the project's real one makes accounts
+    # and defects leak between sessions, and a suite whose result depends on what
+    # you ran yesterday is worse than no suite.
+    import tempfile
+
+    db = Path(tempfile.mkdtemp(prefix="qtcap-ui-")) / "lab.sqlite3"
+    env = {**os.environ, "QTCAP_LLM_PROVIDER": "stub", "QTCAP_DB_PATH": str(db)}
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.api.main:app",
          "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
@@ -502,13 +508,45 @@ def test_ui37_the_brand_mark_is_present_and_loads(page):
 # ---------------------------------------------------------------------------
 # Test Lab: sign in, run a published case, mark it, raise and publish a defect
 # ---------------------------------------------------------------------------
-def _sign_in(page, name="uitester"):
-    page.click('[data-testid="tab-lab"]')
-    if page.locator('[data-testid="signin-box"][data-state="signed-in"]').count():
+def _account(page, email: str, passcode: str = "capstone2026", name: str = "") -> None:
+    """Create the account if it is new, sign in if it already exists.
+
+    The server outlives each test, so a fixed address is registered once and
+    exists thereafter. A helper that only knows how to sign up passes the first
+    time and fails every time after — which looks like a product bug and is not.
+    """
+    page.click('[data-testid="open-signin"]')
+    page.wait_for_selector('[data-testid="signin-modal"]:not([hidden])')
+    page.click('[data-testid="mode-signup"]')
+    page.fill('[data-testid="ac-email"]', email)
+    page.fill('[data-testid="ac-name"]', name or email.split("@")[0])
+    page.fill('[data-testid="ac-passcode"]', passcode)
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_function(
+        "() => document.getElementById('signinModal').hidden"
+        " || (document.getElementById('acError').textContent || '').length > 0")
+    if page.locator('[data-testid="signin-modal"]').is_hidden():
         return
-    page.wait_for_selector('[data-testid="local-go"]')
-    page.fill('[data-testid="local-name"]', name)
-    page.click('[data-testid="local-go"]')
+    page.click('[data-testid="mode-signin"]')
+    page.fill('[data-testid="ac-email"]', email)
+    page.fill('[data-testid="ac-passcode"]', passcode)
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_selector('[data-testid="signin-modal"]', state="hidden")
+
+
+def _sign_in(page, name="uitester"):
+    """Sign in through the header button, the way a trainee actually would."""
+    page.click('[data-testid="tab-lab"]')
+    # The session cookie survives between tests in one browser context, so wait
+    # for /api/auth/me to settle before deciding whether a sign-in is needed.
+    page.wait_for_function(
+        "() => document.getElementById('openSignin')"
+        " && document.getElementById('openAccount')"
+        " && (!document.getElementById('openSignin').hidden"
+        "     || !document.getElementById('openAccount').hidden)")
+    if page.locator('[data-testid="open-account"]').is_visible():
+        return
+    _account(page, f"{name}@example.com", name=name)
     page.wait_for_selector('[data-testid="signin-box"][data-state="signed-in"]')
 
 
@@ -598,3 +636,60 @@ def test_ui45_the_defect_board_shows_a_name_and_never_an_email(page):
     page.click('[data-testid="tab-board"]')
     text = page.inner_text('[data-testid="public-defects"]')
     assert "@local" not in text and "@gmail" not in text
+
+
+def test_ui46_sign_in_is_reachable_from_the_header_on_any_tab(page):
+    """'Where do I log in' should never need a hunt through the tabs."""
+    for tab in ("tab-rag", "tab-market", "tab-board"):
+        page.click(f'[data-testid="{tab}"]')
+        assert page.locator('[data-testid="open-signin"]').is_visible(), \
+            f"the sign-in button disappeared on {tab}"
+    page.click('[data-testid="open-signin"]')
+    page.wait_for_selector('[data-testid="signin-modal"]:not([hidden])')
+    assert page.locator('[data-testid="ac-email"]').is_visible()
+    page.click('[data-testid="ac-cancel"]')
+
+
+def test_ui47_an_account_can_be_created_and_reused(page):
+    _account(page, "newtrainee@example.com", name="New Trainee")
+    assert page.locator('[data-testid="open-account"]').is_visible()
+    assert "New Trainee" in page.inner_text('[data-testid="open-account"]')
+
+    page.click('[data-testid="tab-lab"]')
+    page.click('[data-testid="sign-out"]')
+    page.wait_for_selector('[data-testid="signin-box"][data-state="signed-out"]')
+
+    page.click('[data-testid="open-signin"]')
+    page.fill('[data-testid="ac-email"]', "newtrainee@example.com")
+    page.fill('[data-testid="ac-passcode"]', "capstone2026")
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_selector('[data-testid="signin-modal"]', state="hidden")
+    assert page.locator('[data-testid="open-account"]').is_visible()
+
+
+def test_ui48_a_wrong_passcode_says_so_and_does_not_sign_you_in(page):
+    page.click('[data-testid="open-signin"]')
+    page.wait_for_selector('[data-testid="signin-modal"]:not([hidden])')
+    page.fill('[data-testid="ac-email"]', "newtrainee@example.com")
+    page.fill('[data-testid="ac-passcode"]', "definitelywrong")
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_function(
+        "() => (document.getElementById('acError').textContent || '').length > 0")
+    assert "account" in page.inner_text('[data-testid="ac-error"]').lower()
+    assert not page.locator('[data-testid="signin-modal"]').is_hidden()
+    page.click('[data-testid="ac-cancel"]')
+
+
+def test_ui49_my_account_shows_history_and_report_links(page):
+    _sign_in(page, "accountuser")
+    page.fill('[data-testid="lab-search"]', "TC_G_G16_183")
+    page.wait_for_selector('[data-testid="run-TC_G_G16_183"]')
+    page.click('[data-testid="run-TC_G_G16_183"]')
+    page.wait_for_selector('[data-testid="result-TC_G_G16_183"]')
+
+    page.click('[data-testid="tab-account"]')
+    page.wait_for_selector('[data-testid="account-body"][data-state="signed-in"]')
+    assert int(page.inner_text('[data-testid="acct-executed"]')) >= 1
+    assert "TC_G_G16_183" in page.inner_text('[data-testid="acct-history"]')
+    for link in ("dl-md", "dl-csv"):
+        assert page.locator(f'[data-testid="{link}"]').is_visible()

@@ -25,6 +25,40 @@ the most dangerous artefact in the project — so it doesn't. The key still live
 in `localStorage`, still rides on each request as a header, and is still used
 once and discarded, exactly as it did before sign-in existed.
 
+## Where you sign in
+
+**Top right of every page: "Sign in".** It opens one dialog with two ways in:
+
+- **Google**, when the instance has a client id configured (below)
+- **Email and passcode**, always — create an account on this instance in about
+  ten seconds
+
+Once signed in, that button becomes your name and takes you to **My Account**.
+
+### Email and passcode accounts
+
+Pick "Create an account", give an email address, a display name and a passcode
+of at least 8 characters. The passcode is hashed with PBKDF2-SHA256 and a
+per-account salt before it is stored: this instance never holds it, and it must
+not be your email password.
+
+Six wrong guesses lock that account for five minutes, and sign-in attempts are
+rate limited per address — but note what this does *not* do: **the email address
+is never verified**, because verifying it needs a mail service this project
+does not have and should not grow for a classroom tool. So it is a real secret
+protecting a real boundary between trainees, and it is not proof of who someone
+is. Where that distinction matters, configure Google.
+
+## My Account
+
+Your name in the header, or the **My Account** tab. It shows:
+
+- **Executed / Defects / Coverage / Last run** as four cards
+- **Execution history** — every case you have run, the harness status, your own
+  verdict, and when
+- **My defects** — with severity, linked case, and whether each is published
+- **Report (markdown)** and **Results (CSV)** downloads
+
 ## Setting up Google sign-in
 
 Sign-in needs one public client id. There is no client secret, because the

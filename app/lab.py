@@ -65,6 +65,18 @@ def _connect() -> sqlite3.Connection:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS accounts (
+  email TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  passcode_hash TEXT NOT NULL,   -- PBKDF2-SHA256, never the passcode itself
+  salt TEXT NOT NULL,
+  iterations INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until REAL
+);
+
 CREATE TABLE IF NOT EXISTS results (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
@@ -112,9 +124,118 @@ def reset() -> None:
     global _CONN
     with _LOCK:
         conn = _connect()
-        conn.executescript("DROP TABLE IF EXISTS results; DROP TABLE IF EXISTS defects;")
+        conn.executescript("DROP TABLE IF EXISTS results; DROP TABLE IF EXISTS defects; "
+                           "DROP TABLE IF EXISTS accounts;")
         conn.executescript(SCHEMA)
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Accounts
+# ---------------------------------------------------------------------------
+# A trainee needs an identity so their results and defects are theirs. Google
+# gives that identity for free when an instance is configured for it, but an
+# instance that has not been configured must not be unusable — so this is the
+# built-in alternative: an email address and a passcode the trainee chooses.
+#
+# What this is and is not: the passcode is hashed with PBKDF2-SHA256 and a
+# per-account salt, never stored or logged in the clear, and repeated wrong
+# guesses lock an account for a few minutes. The email address is **not
+# verified**, because verifying it needs a mail service this project does not
+# have and should not grow for a classroom tool. So this is a real account with
+# a real secret, protecting a real boundary between trainees — and it is not
+# proof of who someone is. Where that distinction matters, configure Google.
+PBKDF2_ITERATIONS = 240_000
+MIN_PASSCODE = 8
+MAX_FAILED = 6
+LOCKOUT_S = 300
+
+
+class AccountError(Exception):
+    """Sign-up or sign-in failed. The message is safe to show the caller."""
+
+
+def _hash_passcode(passcode: str, salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> str:
+    import hashlib
+
+    return hashlib.pbkdf2_hmac("sha256", passcode.encode(), salt, iterations).hex()
+
+
+def _clean_email(email: str) -> str:
+    email = (email or "").strip().lower()
+    if "@" not in email or "." not in email.rsplit("@", 1)[-1] or len(email) > 160:
+        raise AccountError("That does not look like an email address.")
+    return email
+
+
+def create_account(email: str, name: str, passcode: str) -> dict[str, Any]:
+    import secrets as _secrets
+
+    email = _clean_email(email)
+    if len(passcode or "") < MIN_PASSCODE:
+        raise AccountError(f"Choose a passcode of at least {MIN_PASSCODE} characters.")
+    salt = _secrets.token_bytes(16)
+    now = time.time()
+    row = {"email": email, "name": (name or email.split("@")[0])[:80],
+           "passcode_hash": _hash_passcode(passcode, salt), "salt": salt.hex(),
+           "iterations": PBKDF2_ITERATIONS, "created_at": now, "last_seen_at": now,
+           "failed_attempts": 0, "locked_until": None}
+    with _LOCK:
+        conn = _connect()
+        if conn.execute("SELECT 1 FROM accounts WHERE email = ?", (email,)).fetchone():
+            raise AccountError("An account already exists for that address. Sign in instead.")
+        conn.execute(
+            "INSERT INTO accounts (email,name,passcode_hash,salt,iterations,created_at,"
+            "last_seen_at,failed_attempts,locked_until) VALUES (:email,:name,:passcode_hash,"
+            ":salt,:iterations,:created_at,:last_seen_at,:failed_attempts,:locked_until)", row)
+        conn.commit()
+    return {"email": email, "name": row["name"]}
+
+
+def verify_account(email: str, passcode: str) -> dict[str, Any]:
+    """Check a passcode. Wrong answers are slow to matter and quick to lock."""
+    import hmac as _hmac
+
+    email = _clean_email(email)
+    with _LOCK:
+        conn = _connect()
+        row = conn.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+        if row is None:
+            # Same message either way: which addresses have accounts is not
+            # something an unauthenticated caller gets to enumerate.
+            raise AccountError("No account with that address and passcode.")
+        if row["locked_until"] and row["locked_until"] > time.time():
+            wait = int(row["locked_until"] - time.time())
+            raise AccountError(f"Too many attempts. Try again in {wait} seconds.")
+
+        candidate = _hash_passcode(passcode or "", bytes.fromhex(row["salt"]), row["iterations"])
+        if not _hmac.compare_digest(candidate, row["passcode_hash"]):
+            failed = row["failed_attempts"] + 1
+            locked = time.time() + LOCKOUT_S if failed >= MAX_FAILED else None
+            conn.execute("UPDATE accounts SET failed_attempts = ?, locked_until = ? WHERE email = ?",
+                         (failed, locked, email))
+            conn.commit()
+            raise AccountError("No account with that address and passcode.")
+
+        conn.execute("UPDATE accounts SET failed_attempts = 0, locked_until = NULL, "
+                     "last_seen_at = ? WHERE email = ?", (time.time(), email))
+        conn.commit()
+        return {"email": email, "name": row["name"]}
+
+
+def account_exists(email: str) -> bool:
+    try:
+        email = _clean_email(email)
+    except AccountError:
+        return False
+    with _LOCK:
+        return _connect().execute(
+            "SELECT 1 FROM accounts WHERE email = ?", (email,)).fetchone() is not None
+
+
+def account_count() -> int:
+    with _LOCK:
+        return _connect().execute("SELECT COUNT(*) AS n FROM accounts").fetchone()["n"]
 
 
 # ---------------------------------------------------------------------------

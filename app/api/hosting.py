@@ -137,11 +137,18 @@ class RateLimiter:
         self.windows: dict[str, deque[float]] = defaultdict(deque)
         self.per_minute = _int_env("QTCAP_RATE_PER_MIN", 40)
         self.heavy_per_minute = _int_env("QTCAP_HEAVY_RATE_PER_MIN", 8)
+        # Sign-in gets its own budget. Reusing the heavy bucket throttles a whole
+        # classroom behind one NAT after eight people log in, and per-account
+        # lockout already handles guessing at one address.
+        self.auth_per_minute = _int_env("QTCAP_AUTH_RATE_PER_MIN", 30)
         self.window_s = 60.0
 
-    def check(self, client: str, heavy: bool = False) -> tuple[bool, int, int]:
-        limit = self.heavy_per_minute if heavy else self.per_minute
-        key = f"{client}:{'h' if heavy else 'n'}"
+    def check(self, client: str, heavy: bool = False, bucket: str = "") -> tuple[bool, int, int]:
+        if bucket == "auth":
+            limit = self.auth_per_minute
+        else:
+            limit = self.heavy_per_minute if heavy else self.per_minute
+        key = f"{client}:{bucket or ('h' if heavy else 'n')}"
         now = time.monotonic()
         window = self.windows[key]
         while window and now - window[0] > self.window_s:

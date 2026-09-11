@@ -25,6 +25,8 @@
     <span class="pill" id="pillGuard" data-testid="pill-guard">guardrails: …</span>
     <span class="pill" id="pillKb" data-testid="pill-kb">kb: …</span>
     <button class="pill pill-btn" id="openSettings" data-testid="open-settings">⚙ Model &amp; key</button>
+    <button class="pill pill-btn signin-pill" id="openSignin" data-testid="open-signin">Sign in</button>
+    <button class="pill pill-btn" id="openAccount" data-testid="open-account" hidden>My account</button>
   </div>
 </header>
 
@@ -38,6 +40,7 @@
   <button class="tab" role="tab" data-panel="issues" data-testid="tab-issues">Findings</button>
   <button class="tab" role="tab" data-panel="lab"    data-testid="tab-lab">Test Lab</button>
   <button class="tab" role="tab" data-panel="board"  data-testid="tab-board">Defect Board</button>
+  <button class="tab" role="tab" data-panel="account" data-testid="tab-account">My Account</button>
   <button class="tab" role="tab" data-panel="admin"  data-testid="tab-admin">Test Controls</button>
 </nav>
 
@@ -265,14 +268,8 @@
       </div>
       <div class="signin" id="signinBox" data-testid="signin-box" data-state="signed-out">
         <div id="signedOut">
-          <div id="googleBtn" data-testid="google-btn"></div>
-          <div id="localSignin" hidden>
-            <label>Offline sign-in (local runs only)
-              <input id="localName" data-testid="local-name" placeholder="your name" maxlength="40">
-            </label>
-            <button class="primary" id="localGo" data-testid="local-go">Sign in</button>
-          </div>
-          <p class="hint" id="signinHint"></p>
+          <p class="hint">You are not signed in. Results and defects need an account.</p>
+          <button class="primary" id="labSignin" data-testid="lab-signin">Sign in or create an account</button>
         </div>
         <div id="signedIn" hidden>
           <span class="who" data-testid="who"><span id="whoName"></span>
@@ -320,6 +317,16 @@
         <p class="hint">Everything the class has published. Readable by anyone, signed in or not.</p>
         <div id="publicDefects" data-testid="public-defects"></div>
       </div>
+    </div>
+  </section>
+
+
+  <!-- ============ MY ACCOUNT ============ -->
+  <section class="panel" id="panel-account" role="tabpanel">
+    <h2>My Account</h2>
+    <div id="accountBody" data-testid="account-body" data-state="signed-out">
+      <p class="hint">Sign in to see your account, your execution history and your reports.</p>
+      <button class="primary" id="accountSignin" data-testid="account-signin">Sign in</button>
     </div>
   </section>
 
@@ -376,6 +383,43 @@
 <footer>
   <span>Quality Thought — training application. All market figures are educational, not investment advice.</span>
 </footer>
+<div class="modal-bg" id="signinModal" data-testid="signin-modal" hidden>
+  <div class="modal">
+    <h3>Sign in to the Test Lab</h3>
+    <p class="hint">Your results and defects are kept against your account.
+      <strong>Your model API key is never part of this</strong> — it stays in your browser.</p>
+
+    <div id="googleBtn" data-testid="google-btn"></div>
+    <p class="hint" id="googleHint" hidden></p>
+
+    <div class="tabsmall" role="tablist">
+      <button class="tabsmall-btn active" id="modeSignin" data-testid="mode-signin">I have an account</button>
+      <button class="tabsmall-btn" id="modeSignup" data-testid="mode-signup">Create an account</button>
+    </div>
+
+    <label>Email <input id="acEmail" data-testid="ac-email" type="email"
+      autocomplete="email" placeholder="you@example.com" maxlength="160"></label>
+    <label id="acNameRow" hidden>Your name <input id="acName" data-testid="ac-name"
+      placeholder="how you want to appear on the defect board" maxlength="80"></label>
+    <label>Passcode <input id="acPasscode" data-testid="ac-passcode" type="password"
+      autocomplete="current-password" maxlength="200"></label>
+    <p class="hint" id="acHint">At least 8 characters. It is hashed before storage — this
+      instance never holds your passcode, and it is not your email password.</p>
+
+    <div class="controls">
+      <button class="primary" id="acGo" data-testid="ac-go">Sign in</button>
+      <button class="ghost" id="acCancel" data-testid="ac-cancel">Cancel</button>
+    </div>
+    <p class="hint err" id="acError" data-testid="ac-error"></p>
+
+    <div id="localSignin" hidden>
+      <hr class="rule">
+      <label>Offline sign-in (local runs only)
+        <input id="localName" data-testid="local-name" placeholder="your name" maxlength="40"></label>
+      <button class="ghost" id="localGo" data-testid="local-go">Sign in without an account</button>
+    </div>
+  </div>
+</div>
 <div class="modal-bg" id="defectModal" data-testid="defect-modal" hidden>
   <div class="modal">
     <h3 id="defectHeading">Raise a defect</h3>

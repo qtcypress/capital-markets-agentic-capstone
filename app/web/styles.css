@@ -283,3 +283,25 @@ button.ghost:hover{color:var(--text);border-color:var(--accent)}
   .lab-head { flex-direction: column; }
   .signin { width: 100%; }
 }
+
+/* ---------------- accounts ---------------- */
+.signin-pill { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tabsmall { display: flex; gap: 4px; margin: 14px 0 10px; }
+.tabsmall-btn {
+  flex: 1; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); font-size: 12.5px; cursor: pointer; color: var(--muted);
+}
+.tabsmall-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.hint.err { color: var(--danger); min-height: 1em; }
+.modal .rule { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+#googleBtn:empty { display: none; }
+
+.acct-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.acct-head h3 { margin: 0; font-size: 18px; text-transform: none; letter-spacing: 0; color: var(--text); }
+.acct-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.acct-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.acct-table th, .acct-table td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.acct-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.acct-table .mono { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.dashbig.sm { font-size: 14px; font-weight: 500; }
+.scroll { overflow-x: auto; }
