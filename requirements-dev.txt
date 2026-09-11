@@ -1,0 +1,6 @@
+# Testing — not needed to run the app, and deliberately not in the container
+# image, which keeps the build inside a free tier's time and size limits.
+-r requirements.txt
+pytest>=8.0
+pytest-html>=4.1
+playwright>=1.44

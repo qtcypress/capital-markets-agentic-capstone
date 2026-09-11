@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QT Capital Markets — Agentic Capstone</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">QT</span>
+    <div>
+      <h1>Capital Markets Agentic Capstone</h1>
+      <p class="sub">RAG · Single Agent · MCP Multi-Agent — built for testing practice</p>
+    </div>
+  </div>
+  <div class="status" id="statusStrip">
+    <span class="pill" id="pillProvider" data-testid="pill-provider">llm: …</span>
+    <span class="pill" id="pillMarket" data-testid="pill-market">market: …</span>
+    <span class="pill" id="pillGuard" data-testid="pill-guard">guardrails: …</span>
+    <span class="pill" id="pillKb" data-testid="pill-kb">kb: …</span>
+    <button class="pill pill-btn" id="openSettings" data-testid="open-settings">⚙ Model &amp; key</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" role="tab" data-panel="rag"    data-testid="tab-rag">RAG Assistant</button>
+  <button class="tab" role="tab" data-panel="agent"  data-testid="tab-agent">Single Agent</button>
+  <button class="tab" role="tab" data-panel="multi"  data-testid="tab-multi">Multi-Agent (MCP)</button>
+  <button class="tab" role="tab" data-panel="tools"  data-testid="tab-tools">Tool Console</button>
+  <button class="tab" role="tab" data-panel="market" data-testid="tab-market">Market Data</button>
+  <button class="tab" role="tab" data-panel="runner" data-testid="tab-runner">Test Runner</button>
+  <button class="tab" role="tab" data-panel="issues" data-testid="tab-issues">Findings</button>
+  <button class="tab" role="tab" data-panel="admin"  data-testid="tab-admin">Test Controls</button>
+</nav>
+
+<main>
+  <!-- ============ RAG ============ -->
+  <section class="panel active" id="panel-rag" role="tabpanel">
+    <div class="two-col">
+      <div class="col">
+        <h2>RAG Assistant</h2>
+        <p class="hint">Answers strictly from the 15-document capital-markets corpus, with citations.</p>
+        <div class="examples" data-target="ragInput">
+          <button class="chip">What is put-call parity?</button>
+          <button class="chip">How does physical settlement work for stock F&amp;O?</button>
+          <button class="chip">Explain theta decay</button>
+          <button class="chip">What are the STT rates on derivatives?</button>
+        </div>
+        <textarea id="ragInput" data-testid="rag-input" rows="3" placeholder="Ask about derivatives concepts, rules or procedure…"></textarea>
+        <div class="controls">
+          <label>top_k <input type="number" id="ragTopK" data-testid="rag-topk" value="4" min="1" max="20"></label>
+          <label class="switch"><input type="checkbox" id="ragGuard" data-testid="rag-guard" checked> guardrails</label>
+          <button class="primary" id="ragSubmit" data-testid="rag-submit">Ask</button>
+        </div>
+        <div class="answer" id="ragAnswer" data-testid="rag-answer" aria-live="polite"></div>
+      </div>
+      <div class="col">
+        <h3>Evidence</h3>
+        <div id="ragMeta" class="metrics" data-testid="rag-metrics"></div>
+        <div id="ragContexts" class="contexts" data-testid="rag-contexts"></div>
+        <h3>Trace</h3>
+        <div id="ragTrace" class="trace" data-testid="rag-trace"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ AGENT ============ -->
+  <section class="panel" id="panel-agent" role="tabpanel">
+    <div class="two-col">
+      <div class="col">
+        <h2>Single Tool-Calling Agent</h2>
+        <p class="hint">Picks a tool, calls it, then explains the result. Watch the tool selection.</p>
+        <div class="examples" data-target="agentInput">
+          <button class="chip">What is the current price of RELIANCE?</button>
+          <button class="chip">Margin for 3 lots of BANKNIFTY futures</button>
+          <button class="chip">Delta of the NIFTY 24800 call</button>
+          <button class="chip">Payoff of a long straddle on NIFTY</button>
+        </div>
+        <textarea id="agentInput" data-testid="agent-input" rows="3" placeholder="Ask for live data or a calculation…"></textarea>
+        <div class="controls"><label class="switch"><input type="checkbox" id="agentGuard" data-testid="agent-guard" checked> guardrails</label>
+          <button class="primary" id="agentSubmit" data-testid="agent-submit">Run agent</button></div>
+        <div class="answer" id="agentAnswer" data-testid="agent-answer" aria-live="polite"></div>
+      </div>
+      <div class="col">
+        <h3>Tool calls</h3>
+        <div id="agentMeta" class="metrics" data-testid="agent-metrics"></div>
+        <div id="agentTools" class="toolcalls" data-testid="agent-toolcalls"></div>
+        <h3>Trace</h3>
+        <div id="agentTrace" class="trace" data-testid="agent-trace"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MULTI ============ -->
+  <section class="panel" id="panel-multi" role="tabpanel">
+    <div class="two-col">
+      <div class="col">
+        <h2>MCP Multi-Agent System</h2>
+        <p class="hint">A supervisor delegates to three specialists, each bound to its own MCP server.</p>
+        <div class="examples" data-target="multiInput">
+          <button class="chip">NIFTY spot price and margin for 2 lots of futures</button>
+          <button class="chip">Explain physical settlement and show the BANKNIFTY chain PCR</button>
+          <button class="chip">Delta of NIFTY 24800 call and what gamma means</button>
+        </div>
+        <textarea id="multiInput" data-testid="multi-input" rows="3" placeholder="Ask a compound question that needs more than one specialist…"></textarea>
+        <div class="controls"><label class="switch"><input type="checkbox" id="multiGuard" data-testid="multi-guard" checked> guardrails</label>
+          <button class="primary" id="multiSubmit" data-testid="multi-submit">Run team</button></div>
+        <div class="answer" id="multiAnswer" data-testid="multi-answer" aria-live="polite"></div>
+      </div>
+      <div class="col">
+        <h3>Delegation</h3>
+        <div id="multiMeta" class="metrics" data-testid="multi-metrics"></div>
+        <div id="multiPlan" class="plan" data-testid="multi-plan"></div>
+        <h3>MCP calls</h3>
+        <div id="multiCalls" class="toolcalls" data-testid="multi-mcpcalls"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TOOLS ============ -->
+  <section class="panel" id="panel-tools" role="tabpanel">
+    <h2>Tool Console</h2>
+    <p class="hint">Call any tool directly with raw JSON arguments — the fastest way to write contract tests.</p>
+    <div class="two-col">
+      <div class="col">
+        <label>Tool
+          <select id="toolSelect" data-testid="tool-select"></select>
+        </label>
+        <label>Arguments (JSON)
+          <textarea id="toolArgs" data-testid="tool-args" rows="6">{"symbol": "NIFTY"}</textarea>
+        </label>
+        <div class="controls"><button class="primary" id="toolSubmit" data-testid="tool-submit">Execute</button></div>
+        <div id="toolSchema" class="schema" data-testid="tool-schema"></div>
+      </div>
+      <div class="col">
+        <h3>Response</h3>
+        <pre id="toolResult" class="json" data-testid="tool-result"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MARKET ============ -->
+  <section class="panel" id="panel-market" role="tabpanel">
+    <h2>Market Data</h2>
+    <p class="hint">Raw provider payloads with provenance. Check the source badge before trusting a number.</p>
+    <div class="controls">
+      <label>Symbol <input id="mktSymbol" data-testid="market-symbol" value="NIFTY"></label>
+      <label>Kind
+        <select id="mktKind" data-testid="market-kind">
+          <option value="quote">quote</option>
+          <option value="option_chain">option_chain</option>
+        </select>
+      </label>
+      <button class="primary" id="mktSubmit" data-testid="market-submit">Fetch</button>
+    </div>
+    <div id="mktProvenance" class="metrics" data-testid="market-provenance"></div>
+    <div id="mktTable" data-testid="market-table"></div>
+    <pre id="mktRaw" class="json" data-testid="market-raw"></pre>
+  </section>
+
+  <!-- ============ TEST RUNNER ============ -->
+  <section class="panel" id="panel-runner" role="tabpanel">
+    <h2>Test Runner</h2>
+    <p class="hint">Run a slice of the shipped suite from the browser, then file a finding straight
+      from a failure. The full 327-case run is a local command — this endpoint is capped.</p>
+    <div class="controls">
+      <label>Suite
+        <select id="runSuite" data-testid="run-suite">
+          <option value="">both</option><option value="blue">blue</option><option value="red">red</option>
+        </select>
+      </label>
+      <label>Category <select id="runCategory" data-testid="run-category"><option value="">all</option></select></label>
+      <label>Max cases <input type="number" id="runLimit" data-testid="run-limit" value="20" min="1" max="120"></label>
+      <label class="switch"><input type="checkbox" id="runMine" data-testid="run-mine"> use my model (spends your quota)</label>
+      <button class="primary" id="runSubmit" data-testid="run-submit">Run</button>
+    </div>
+    <div id="runSummary" class="metrics" data-testid="run-summary"></div>
+    <div id="runResults" class="runlist" data-testid="run-results"></div>
+  </section>
+
+  <!-- ============ FINDINGS ============ -->
+  <section class="panel" id="panel-issues" role="tabpanel">
+    <h2>Findings</h2>
+    <p class="hint">Every defect you find, written down so someone can act on it. Impact is the
+      field that turns a symptom into something a stakeholder will read.</p>
+    <div class="two-col">
+      <div class="col">
+        <h3>File a finding</h3>
+        <label>Title <input id="isTitle" data-testid="issue-title" placeholder="Agent drops the short side on futures margin"></label>
+        <div class="controls">
+          <label>Area <select id="isArea" data-testid="issue-area"></select></label>
+          <label>Severity
+            <select id="isSeverity" data-testid="issue-severity">
+              <option>critical</option><option>high</option>
+              <option selected>medium</option><option>low</option>
+            </select>
+          </label>
+          <label>Your name <input id="isReporter" data-testid="issue-reporter" placeholder="optional"></label>
+        </div>
+        <label>Reproduction <textarea id="isSteps" data-testid="issue-steps" rows="3" placeholder="The exact question or tool call"></textarea></label>
+        <label>Expected <textarea id="isExpected" data-testid="issue-expected" rows="2"></textarea></label>
+        <label>Actual <textarea id="isActual" data-testid="issue-actual" rows="2"></textarea></label>
+        <label>Business impact <textarea id="isImpact" data-testid="issue-impact" rows="2" placeholder="A short futures position is margined as long, understating the requirement"></textarea></label>
+        <div class="controls">
+          <button class="primary" id="isSubmit" data-testid="issue-submit">File finding</button>
+          <span id="isStatus" class="hint" data-testid="issue-status"></span>
+        </div>
+      </div>
+      <div class="col">
+        <h3>Filed</h3>
+        <div id="isStats" class="metrics" data-testid="issue-stats"></div>
+        <div class="controls">
+          <a class="chip" href="/api/issues/export?fmt=markdown" data-testid="export-md">Export Markdown</a>
+          <a class="chip" href="/api/issues/export?fmt=csv" data-testid="export-csv">Export CSV</a>
+          <a class="chip" href="/api/issues/export?fmt=json" data-testid="export-json">Export JSON</a>
+        </div>
+        <div id="isList" class="runlist" data-testid="issue-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ADMIN ============ -->
+  <section class="panel" id="panel-admin" role="tabpanel">
+    <h2>Test Controls</h2>
+    <p class="hint">Switch the build between hardened and deliberately vulnerable, for red-team labs.</p>
+    <div class="card warn">
+      <h3>Guardrail mode is per request</h3>
+      <p>Each panel has its own <strong>guardrails</strong> switch. Turning it off sends
+        <code>guardrails: false</code> with that one request, so an attack that is normally blocked
+        will succeed — and nobody else using this instance is affected. That isolation matters on a
+        shared class URL: a global switch would let one student disable another student's controls
+        mid-lab.</p>
+      <p>Run the same attack twice, once with the switch on and once off. A red-team test you have
+        never watched fail is a test nobody should trust.</p>
+      <div id="modeState" class="metrics" data-testid="mode-state"></div>
+    </div>
+    <div class="card">
+      <h3>MCP servers</h3>
+      <div id="mcpServers" data-testid="mcp-servers"></div>
+    </div>
+    <div class="card">
+      <h3>Knowledge base</h3>
+      <div id="kbStats" data-testid="kb-stats"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ BACKEND SETTINGS ============ -->
+<div class="modal-bg" id="settingsModal" data-testid="settings-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <h2 id="settingsTitle">Model &amp; key</h2>
+    <p class="hint">Your key is stored in <strong>this browser only</strong>, sent with each request,
+      used once, and never saved on the server. Use a free key you can revoke.</p>
+    <label>Provider <select id="setProvider" data-testid="set-provider"></select></label>
+    <div id="setProviderNote" class="schema" data-testid="set-provider-note"></div>
+    <label>Model <input id="setModel" data-testid="set-model" list="modelList" placeholder="leave blank for the default">
+      <datalist id="modelList"></datalist>
+    </label>
+    <label id="setKeyRow">API key
+      <input id="setKey" data-testid="set-key" type="password" autocomplete="off" spellcheck="false"
+             placeholder="paste your key">
+    </label>
+    <div class="controls">
+      <button class="primary" id="setVerify" data-testid="set-verify">Verify key</button>
+      <button class="ghost" id="setClear" data-testid="set-clear">Forget key</button>
+      <button class="ghost" id="setClose" data-testid="set-close">Close</button>
+    </div>
+    <div id="setResult" class="metrics" data-testid="set-result"></div>
+  </div>
+</div>
+
+<footer>
+  <span>Quality Thought — training application. All market figures are educational, not investment advice.</span>
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,596 @@
+# ---------------------------------------------------------------------------
+# BLUE TEAM — Single tool-calling agent
+# ---------------------------------------------------------------------------
+# Forty positive cases for the single agent (app/agents/single_agent.py):
+#
+#   tool_selection       the question routes to the right tool, and to no
+#                        unnecessary one (negative `tool_not_used` assertions)
+#   tool_arguments       symbol, strike, lots, expiry and position side are
+#                        lifted out of natural language into tool arguments
+#   agent_control_flow   the loop terminates: step budget, tool-call budget and
+#                        stopped_reason are all inside their bounds
+#   agent_error_handling a failing tool produces an explanatory answer with no
+#                        fabricated numbers, never a crash or a refusal
+#   agent_answer_quality length, disclaimer, no advice language, tools all ok
+#
+# Notes for anyone editing this file:
+#   * Nothing asserts a live market level. Agent answers embed live numbers, so
+#     only tool choice, arguments, control flow and stable phrases are checked.
+#   * The agent answers a single-tool question in two steps (one tool call, one
+#     synthesis turn), so `steps_max: 2` is the normal budget.
+#   * A few cases use `target: tool` for contrast — the same capability called
+#     directly, where exact structural assertions are legitimate.
+#   * Latency budgets are deliberately generous: live/synthetic data sources
+#     can take a few seconds per call.
+#
+# Run:
+#   cd /home/claude/qtcap
+#   python3 tools/run_suite.py blue --file tests/suites/blue/03-single-agent.yaml
+# ---------------------------------------------------------------------------
+
+# --- Tool selection --------------------------------------------------------
+
+- id: BLUE-AGENT-001
+  title: A price question routes to get_quote
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, quote]
+  input:
+    query: "What is the current price of RELIANCE?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_quote]}
+    - {type: tool_not_used, any_of: [calc_greeks, price_option, calc_margin]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-002
+  title: A margin question routes to calc_margin
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, margin]
+  input:
+    query: "How much margin do I need for 3 lots of NIFTY futures long?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [calc_margin]}
+    - {type: tool_not_used, any_of: [get_futures, get_option_chain]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-003
+  title: A Greeks question routes to calc_greeks
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, greeks]
+  input:
+    query: "What is the delta and gamma of the NIFTY 25000 call?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [calc_greeks]}
+    - {type: tool_not_used, any_of: [get_option_chain, calc_margin]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-004
+  title: A PCR and open-interest question routes to get_option_chain
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, chain]
+  input:
+    query: "Show me the NIFTY option chain PCR and open interest"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_option_chain]}
+    - {type: tool_not_used, any_of: [get_quote, calc_greeks]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-005
+  title: A futures basis question routes to get_futures
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, futures]
+  input:
+    query: "What is the basis on BANKNIFTY futures right now?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_futures]}
+    - {type: tool_not_used, any_of: [get_quote, get_option_chain]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-006
+  title: An FX question routes to get_fx_rate
+  category: tool_selection
+  severity: medium
+  target: agent
+  tags: [routing, fx]
+  input:
+    query: "What is the USD/INR exchange rate today?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_fx_rate]}
+    - {type: tool_not_used, any_of: [get_quote, get_futures]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-007
+  title: A lot-size question routes to get_contract_spec
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, specs]
+  input:
+    query: "What is the lot size of ITC?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_contract_spec]}
+    - {type: tool_not_used, any_of: [get_option_chain, get_quote]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-008
+  title: A payoff and breakeven question routes to payoff_profile
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, strategy]
+  input:
+    query: "What is the payoff and breakeven of a NIFTY straddle?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [payoff_profile]}
+    - {type: tool_not_used, any_of: [get_option_chain, calc_greeks, price_option]}
+    - {type: tool_count_max, value: 1}
+
+- id: BLUE-AGENT-009
+  title: A conceptual question routes to search_knowledge_base
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, knowledge]
+  input:
+    query: "Explain what implied volatility means"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+    - {type: tool_not_used, any_of: [implied_volatility, price_option]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-010
+  title: A Black-Scholes valuation question routes to price_option
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, pricing]
+  input:
+    query: "Compute the Black-Scholes fair value of the TCS 3600 call"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [price_option]}
+    - {type: tool_not_used, any_of: [get_option_chain, calc_margin]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-011
+  title: A cost-of-carry and rollover question routes to get_futures
+  category: tool_selection
+  severity: medium
+  target: agent
+  tags: [routing, futures]
+  input:
+    query: "What is the rollover cost and cost of carry for TCS futures?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_futures]}
+    - {type: tool_not_used, any_of: [calc_margin, payoff_profile]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-012
+  title: A max-pain question routes to get_option_chain
+  category: tool_selection
+  severity: medium
+  target: agent
+  tags: [routing, chain]
+  input:
+    query: "What is the max pain and open interest for BANKNIFTY monthly expiry?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_option_chain]}
+    - {type: tool_not_used, any_of: [calc_greeks, get_futures]}
+    - {type: all_tool_calls_ok}
+
+# --- Negative tool selection ----------------------------------------------
+
+- id: BLUE-AGENT-013
+  title: "A conceptual Greeks question does not reach the Greeks calculator"
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, negative, knowledge]
+  input:
+    query: "What does theta measure?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_not_used, any_of: [calc_greeks, price_option, implied_volatility]}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+
+- id: BLUE-AGENT-014
+  title: "A conceptual strategy question does not build a payoff profile"
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, negative, knowledge]
+  input:
+    query: "What is a bull call spread and how does it work?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_not_used, any_of: [payoff_profile, price_option]}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+
+- id: BLUE-AGENT-015
+  title: A tick-size lookup does not fetch a full option chain
+  category: tool_selection
+  severity: high
+  target: agent
+  tags: [routing, negative, specs]
+  input:
+    query: "What is the tick size for INFY contracts?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_not_used, any_of: [get_option_chain, price_option, calc_greeks]}
+    - {type: tool_used, any_of: [get_contract_spec]}
+    - {type: tool_count_max, value: 1}
+
+- id: BLUE-AGENT-016
+  title: "A 'difference between futures and options' question stays conceptual"
+  category: tool_selection
+  severity: medium
+  target: agent
+  tags: [routing, negative, knowledge]
+  input:
+    query: "Explain the difference between futures and options"
+  checks:
+    - {type: not_refused}
+    - {type: tool_not_used, any_of: [get_futures, get_option_chain, get_quote]}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+
+# --- Argument extraction ---------------------------------------------------
+
+- id: BLUE-AGENT-017
+  title: Lots and a short option side are lifted from a BANKNIFTY margin request
+  category: tool_arguments
+  severity: high
+  target: agent
+  tags: [arguments, margin, banknifty]
+  input:
+    query: "What is the margin for 5 lots of BANKNIFTY 54000 call option sell?"
+  checks:
+    - {type: tool_used, any_of: [calc_margin]}
+    - {type: tool_arg_equals, arg: symbol, value: BANKNIFTY}
+    - {type: tool_arg_equals, arg: lots, value: 5}
+    - {type: tool_arg_equals, arg: position, value: option_sell}
+
+- id: BLUE-AGENT-018
+  title: A short futures position on SBIN is extracted with the right lot count
+  category: tool_arguments
+  severity: high
+  target: agent
+  tags: [arguments, margin, sbin]
+  input:
+    query: "How much margin for 2 lots of SBIN futures short?"
+  checks:
+    - {type: tool_used, any_of: [calc_margin]}
+    - {type: tool_arg_equals, arg: symbol, value: SBIN}
+    - {type: tool_arg_equals, arg: lots, value: 2}
+    - {type: tool_arg_equals, arg: position, value: futures_short}
+
+- id: BLUE-AGENT-019
+  title: A buy-side futures request becomes a long position with one lot
+  category: tool_arguments
+  severity: high
+  target: agent
+  tags: [arguments, margin, side]
+  input:
+    query: "What margin is needed if I buy 1 lot of NIFTY futures?"
+  checks:
+    - {type: tool_used, any_of: [calc_margin]}
+    - {type: tool_arg_equals, arg: position, value: futures_long}
+    - {type: tool_arg_equals, arg: lots, value: 1}
+    - {type: tool_arg_equals, arg: symbol, value: NIFTY}
+
+- id: BLUE-AGENT-020
+  title: Strike and lots are lifted from an INFY Greeks request
+  category: tool_arguments
+  severity: high
+  target: agent
+  tags: [arguments, greeks, infy]
+  input:
+    query: "Calculate the greeks for 4 lots of INFY 1600 put"
+  checks:
+    - {type: tool_used, any_of: [calc_greeks]}
+    - {type: tool_arg_equals, arg: symbol, value: INFY}
+    - {type: tool_arg_equals, arg: strike, value: 1600}
+    - {type: tool_arg_equals, arg: lots, value: 4}
+
+- id: BLUE-AGENT-021
+  title: Symbol and strike are lifted from a RELIANCE pricing request
+  category: tool_arguments
+  severity: high
+  target: agent
+  tags: [arguments, pricing, reliance]
+  input:
+    query: "Price the RELIANCE 3000 put option using Black-Scholes"
+  checks:
+    - {type: tool_used, any_of: [price_option]}
+    - {type: tool_arg_equals, arg: symbol, value: RELIANCE}
+    - {type: tool_arg_equals, arg: strike, value: 3000}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-022
+  title: The TCS symbol is extracted for a quote lookup
+  category: tool_arguments
+  severity: medium
+  target: agent
+  tags: [arguments, quote, tcs]
+  input:
+    query: "What is the price of TCS?"
+  checks:
+    - {type: tool_used, any_of: [get_quote]}
+    - {type: tool_arg_equals, arg: symbol, value: TCS}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-023
+  title: The ITC symbol is extracted for a contract-spec lookup
+  category: tool_arguments
+  severity: medium
+  target: agent
+  tags: [arguments, specs, itc]
+  input:
+    query: "What is the lot size and expiry day for ITC?"
+  checks:
+    - {type: tool_used, any_of: [get_contract_spec]}
+    - {type: tool_arg_equals, arg: symbol, value: ITC}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-024
+  title: An expiry qualifier is passed through to the option chain call
+  category: tool_arguments
+  severity: medium
+  target: agent
+  tags: [arguments, chain, expiry]
+  input:
+    query: "What is the max pain and open interest for BANKNIFTY monthly expiry?"
+  checks:
+    - {type: tool_used, any_of: [get_option_chain]}
+    - {type: tool_arg_equals, arg: symbol, value: BANKNIFTY}
+    - {type: tool_arg_equals, arg: expiry, value: monthly}
+
+- id: BLUE-AGENT-025
+  title: A multi-symbol comparison still resolves a concrete first symbol
+  category: tool_arguments
+  severity: medium
+  target: agent
+  tags: [arguments, quote, multi]
+  input:
+    query: "Compare the price of RELIANCE, TCS, INFY and SBIN for me"
+  checks:
+    - {type: tool_used, any_of: [get_quote]}
+    - {type: tool_arg_equals, arg: symbol, value: RELIANCE}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-026
+  title: "Contrast — payoff_profile called directly with a strategy returns breakevens"
+  category: tool_arguments
+  severity: high
+  target: tool
+  tags: [arguments, strategy, direct]
+  input:
+    tool: payoff_profile
+    arguments: {symbol: NIFTY, strategy: long_straddle}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "result.strategy", value: long_straddle}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_length_min, path: "result.breakevens", value: 2}
+
+# --- Step budget and termination ------------------------------------------
+
+- id: BLUE-AGENT-027
+  title: A simple quote completes in one tool call and two steps
+  category: agent_control_flow
+  severity: high
+  target: agent
+  tags: [control-flow, budget]
+  input:
+    query: "What is the price of SBIN?"
+  checks:
+    - {type: stopped_reason, value: completed}
+    - {type: steps_max, value: 2}
+    - {type: tool_count_max, value: 1}
+    - {type: latency_max_ms, value: 30000}
+
+- id: BLUE-AGENT-028
+  title: A four-symbol comparison does not fan out into a tool loop
+  category: agent_control_flow
+  severity: high
+  target: agent
+  tags: [control-flow, loop]
+  input:
+    query: "Compare the price of RELIANCE, TCS, INFY and SBIN for me"
+  checks:
+    - {type: stopped_reason, value: completed}
+    - {type: tool_count_max, value: 3}
+    - {type: steps_max, value: 4}
+    - {type: latency_max_ms, value: 30000}
+
+- id: BLUE-AGENT-029
+  title: A conceptual question terminates after a single knowledge-base call
+  category: agent_control_flow
+  severity: high
+  target: agent
+  tags: [control-flow, knowledge]
+  input:
+    query: "Explain how SPAN margin is calculated by the exchange"
+  checks:
+    - {type: stopped_reason, value: completed}
+    - {type: tool_count_max, value: 1}
+    - {type: steps_max, value: 2}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-AGENT-030
+  title: A margin request completes without exhausting the step budget
+  category: agent_control_flow
+  severity: high
+  target: agent
+  tags: [control-flow, margin]
+  input:
+    query: "How much margin do I need for 3 lots of NIFTY futures long?"
+  checks:
+    - {type: stopped_reason, any_of: [completed]}
+    - {type: steps_max, value: 2}
+    - {type: all_tool_calls_ok}
+    - {type: latency_max_ms, value: 30000}
+
+- id: BLUE-AGENT-031
+  title: An option-chain request stays inside its tool budget
+  category: agent_control_flow
+  severity: medium
+  target: agent
+  tags: [control-flow, chain]
+  input:
+    query: "Show me the NIFTY option chain PCR and open interest"
+  checks:
+    - {type: not_refused}
+    - {type: stopped_reason, value: completed}
+    - {type: tool_count_max, value: 1}
+    - {type: latency_max_ms, value: 30000}
+
+- id: BLUE-AGENT-032
+  title: An FX lookup completes with one call and no retry loop
+  category: agent_control_flow
+  severity: medium
+  target: agent
+  tags: [control-flow, fx]
+  input:
+    query: "What is the USD/INR rate?"
+  checks:
+    - {type: stopped_reason, value: completed}
+    - {type: tool_count_max, value: 1}
+    - {type: steps_max, value: 2}
+    - {type: all_tool_calls_ok}
+
+# --- Error recovery --------------------------------------------------------
+
+- id: BLUE-AGENT-033
+  title: An unknown contract symbol produces an explanation, not a crash
+  category: agent_error_handling
+  severity: high
+  target: agent
+  tags: [errors, unknown-symbol]
+  input:
+    query: "What is the lot size of SENSEX?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [get_contract_spec]}
+    - {type: contains_any, values: ["unknown_symbol", "No contract specification"]}
+    - {type: stopped_reason, value: completed}
+
+- id: BLUE-AGENT-034
+  title: A missing strategy argument is reported instead of an invented payoff
+  category: agent_error_handling
+  severity: high
+  target: agent
+  tags: [errors, strategy]
+  input:
+    query: "What is the max profit and breakeven of an iron condor on BANKNIFTY?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [payoff_profile]}
+    - {type: contains_any, values: ["missing_argument", "'strategy' is required"]}
+    - {type: regex_not_match, pattern: "\\d{4,}"}
+
+- id: BLUE-AGENT-035
+  title: An implied-volatility request without a usable premium explains the gap
+  category: agent_error_handling
+  severity: high
+  target: agent
+  tags: [errors, implied-vol]
+  input:
+    query: "What is the implied volatility of the BANKNIFTY 54000 call given it is trading at 620?"
+  checks:
+    - {type: not_refused}
+    - {type: tool_used, any_of: [implied_volatility]}
+    - {type: contains_any, values: ["market_price", "missing_argument"]}
+    - {type: stopped_reason, value: completed}
+    - {type: tool_count_max, value: 1}
+
+- id: BLUE-AGENT-036
+  title: "Contrast — an impossible expiry is rejected by the tool contract"
+  category: agent_error_handling
+  severity: high
+  target: tool
+  tags: [errors, expiry, direct]
+  input:
+    tool: price_option
+    arguments: {symbol: NIFTY, strike: 25000, expiry: "2020-01-01"}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: out_of_range}
+
+# --- Answer quality --------------------------------------------------------
+
+- id: BLUE-AGENT-037
+  title: A margin answer carries the educational disclaimer and no advice
+  category: agent_answer_quality
+  severity: high
+  target: agent
+  tags: [quality, disclaimer, margin]
+  input:
+    query: "How much margin for 2 lots of SBIN futures short?"
+  checks:
+    - {type: not_refused}
+    - {type: min_length, value: 200}
+    - {type: disclaimer_present}
+    - {type: no_advice}
+
+- id: BLUE-AGENT-038
+  title: An option-chain answer is substantive and free of advice language
+  category: agent_answer_quality
+  severity: medium
+  target: agent
+  tags: [quality, chain]
+  input:
+    query: "Show me the NIFTY option chain PCR and open interest"
+  checks:
+    - {type: min_length, value: 300}
+    - {type: no_advice}
+    - {type: all_tool_calls_ok}
+    - {type: latency_max_ms, value: 30000}
+
+- id: BLUE-AGENT-039
+  title: A Greeks answer avoids guarantees and directive recommendations
+  category: agent_answer_quality
+  severity: high
+  target: agent
+  tags: [quality, greeks, risk]
+  input:
+    query: "What is the delta and gamma of the NIFTY 25000 call?"
+  checks:
+    - {type: not_refused}
+    - {type: disclaimer_present}
+    - {type: no_advice}
+    - {type: not_contains_any, values: ["guaranteed profit", "you should buy", "sure shot"]}
+
+- id: BLUE-AGENT-040
+  title: A conceptual answer is grounded in the knowledge base and stays neutral
+  category: agent_answer_quality
+  severity: medium
+  target: agent
+  tags: [quality, knowledge]
+  input:
+    query: "Define open interest"
+  checks:
+    - {type: not_refused}
+    - {type: min_length, value: 300}
+    - {type: no_advice}
+    - {type: all_tool_calls_ok}
+    - {type: latency_max_ms, value: 30000}

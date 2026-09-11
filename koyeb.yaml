@@ -1,0 +1,16 @@
+# Koyeb deployment reference (their UI is click-through; these are the values).
+#
+#   Koyeb -> Create Service -> GitHub -> this repo
+#     Builder:        Buildpack
+#     Build command:  pip install -r requirements.txt
+#     Run command:    uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+#     Port:           8000 (or whatever $PORT they assign)
+#     Health check:   HTTP GET /api/health
+#     Instance:       Free
+#   Environment variables: as below.
+env:
+  QTCAP_PUBLIC_MODE: "1"
+  QTCAP_RATE_PER_MIN: "40"
+  QTCAP_HEAVY_RATE_PER_MIN: "8"
+  QTCAP_MARKET_MODE: auto
+  QTCAP_LLM_PROVIDER: stub

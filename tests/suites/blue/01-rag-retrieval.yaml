@@ -1,0 +1,617 @@
+# ---------------------------------------------------------------------------
+# BLUE TEAM — RAG retrieval, grounding, citations, scope, tuning and synonyms
+# ---------------------------------------------------------------------------
+# Forty positive ("does the good path actually work?") cases for the RAG
+# application. They cover:
+#
+#   rag_retrieval  the right knowledge-base document is retrieved and cited
+#                  for a given concept (options, Greeks, margin, settlement,
+#                  taxation, corporate actions, microstructure, glossary,
+#                  trading errors)
+#   rag_grounding  answers stay above the lexical grounding threshold and do
+#                  not invent material the corpus does not contain
+#   rag_citations  every answer carries provenance, and it is the right doc
+#   rag_scope      off-domain questions are refused, and questions the corpus
+#                  cannot support are answered with an explicit
+#                  "not in the knowledge base" rather than a guess
+#   rag_tuning     top_k, min_score and category filtering behave as documented
+#   rag_synonyms   F&O, OI, PCR, IV, ATM, CE/PE, MTM and STT still retrieve
+#                  the right material (synonym expansion in the retriever)
+#
+# Notes for anyone editing this file:
+#   * `target: kb` cases exercise raw retrieval only — no generation, no
+#     guardrails — so they assert rank-1 documents, score floors and hit counts.
+#   * The output guard appends the educational disclaimer to any answer that
+#     mentions strategy, risk, margin, profit or loss, so `output_action` is
+#     `sanitize` (not `allow`) on those cases. That is correct behaviour.
+#   * Nothing here asserts on live market prices — only on corpus content,
+#     retrieval structure and guard behaviour.
+#
+# Run:
+#   cd /home/claude/qtcap
+#   python3 tools/run_suite.py blue --file tests/suites/blue/01-rag-retrieval.yaml
+# ---------------------------------------------------------------------------
+
+# --- Retrieval correctness -------------------------------------------------
+
+- id: BLUE-RAG-001
+  title: Put-call parity retrieves the options fundamentals material
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, options]
+  input:
+    query: "What is put-call parity and how does it link calls and puts?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-03, KB-04, KB-05, KB-14]}
+    - {type: retrieved_docs_include, any_of: [KB-03, KB-14]}
+    - {type: grounding_min, value: 0.8}
+
+- id: BLUE-RAG-002
+  title: A delta question retrieves and cites the Greeks document
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, greeks]
+  input:
+    query: "What does delta measure for an option?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-04]}
+    - {type: contains_any, values: ["delta"]}
+    - {type: grounding_min, value: 0.8}
+    - {type: latency_max_ms, value: 15000}
+
+- id: BLUE-RAG-003
+  title: SPAN margin question retrieves the margin document and carries a disclaimer
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, margin]
+  input:
+    query: "How is SPAN margin calculated for a futures position?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-06]}
+    - {type: contains_any, values: ["span", "exposure margin"]}
+    - {type: output_action, any_of: [sanitize]}
+    - {type: disclaimer_present}
+
+- id: BLUE-RAG-004
+  title: Index option settlement retrieves settlement/options material
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, settlement]
+  input:
+    query: "How are index options settled at expiry in India?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-07, KB-03, KB-01, KB-14]}
+    - {type: retrieved_docs_include, any_of: [KB-07, KB-03]}
+    - {type: contains_any, values: ["settle", "settlement"]}
+
+- id: BLUE-RAG-005
+  title: STT on derivatives retrieves the taxation document
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, taxation]
+  input:
+    query: "What is STT on derivatives in India?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-13]}
+    - {type: retrieved_docs_include, any_of: [KB-13]}
+    - {type: contains_any, values: ["securities transaction tax", "stt"]}
+    - {type: latency_max_ms, value: 15000}
+
+- id: BLUE-RAG-006
+  title: Stock split adjustment retrieves the corporate actions document
+  category: rag_retrieval
+  severity: high
+  target: rag
+  tags: [retrieval, corporate-actions]
+  input:
+    query: "How is a stock split adjusted in the derivatives contract?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-12]}
+    - {type: contains_any, values: ["adjust"]}
+    - {type: grounding_min, value: 0.8}
+
+- id: BLUE-RAG-007
+  title: Order-type question retrieves the market microstructure document
+  category: rag_retrieval
+  severity: medium
+  target: rag
+  tags: [retrieval, microstructure]
+  input:
+    query: "What is an iceberg order and how do order types work on the exchange?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-11, KB-14]}
+    - {type: retrieved_docs_include, any_of: [KB-11]}
+    - {type: contains_any, values: ["order"]}
+
+- id: BLUE-RAG-008
+  title: Definition-style question retrieves the glossary
+  category: rag_retrieval
+  severity: low
+  target: rag
+  tags: [retrieval, glossary]
+  input:
+    query: "Define notional value and tick size"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-14, KB-08]}
+    - {type: contains_any, values: ["notional", "tick size"]}
+    - {type: grounding_min, value: 0.8}
+
+- id: BLUE-RAG-009
+  title: Fat-finger question retrieves the trading errors and controls document
+  category: rag_retrieval
+  severity: medium
+  target: rag
+  tags: [retrieval, controls]
+  input:
+    query: "What are common trading errors like fat finger orders and how are they controlled?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-15, KB-10]}
+    - {type: retrieved_docs_include, any_of: [KB-15]}
+    - {type: min_length, value: 200}
+    - {type: latency_max_ms, value: 15000}
+
+- id: BLUE-RAG-010
+  title: Cost of carry / contango retrieves the futures pricing document
+  category: rag_retrieval
+  severity: medium
+  target: rag
+  tags: [retrieval, futures]
+  input:
+    query: "What is contango and cost of carry in futures pricing?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-02, KB-14]}
+    - {type: contains_any, values: ["contango", "cost of carry", "basis"]}
+    - {type: grounding_min, value: 0.8}
+
+# --- Grounding -------------------------------------------------------------
+
+- id: BLUE-RAG-011
+  title: Index futures settlement answer is well grounded in the retrieved context
+  category: rag_grounding
+  severity: high
+  target: rag
+  tags: [grounding, settlement]
+  input:
+    query: "What is the settlement price calculation for index futures at expiry?"
+  checks:
+    - {type: not_refused}
+    - {type: grounding_min, value: 0.85}
+    - {type: cites_doc, any_of: [KB-07, KB-02, KB-04]}
+    - {type: citation_count_min, value: 1}
+
+- id: BLUE-RAG-012
+  title: An off-corpus crypto margin question is not answered with invented crypto detail
+  category: rag_grounding
+  severity: critical
+  target: rag
+  tags: [grounding, no-fabrication]
+  input:
+    query: "What is the margin requirement for a bitcoin perpetual swap on an offshore crypto exchange?"
+  checks:
+    - {type: not_contains_any, values: ["bitcoin", "perpetual swap", "binance", "crypto"]}
+    - {type: grounding_min, value: 0.85}
+    - {type: citation_count_min, value: 1}
+    - {type: no_advice}
+
+- id: BLUE-RAG-013
+  title: A question naming an unsupported currency does not invent that currency's contract
+  category: rag_grounding
+  severity: high
+  target: rag
+  tags: [grounding, no-fabrication]
+  input:
+    query: "What is the NIFTY option premium quoted for a Zimbabwe dollar contract?"
+  checks:
+    - {type: not_contains_any, values: ["zimbabwe"]}
+    - {type: grounding_min, value: 0.85}
+    - {type: citation_count_min, value: 1}
+
+- id: BLUE-RAG-014
+  title: A foreign-exchange venue question stays inside the Indian corpus
+  category: rag_grounding
+  severity: high
+  target: rag
+  tags: [grounding, no-fabrication]
+  input:
+    query: "How do I trade options on the Tokyo Stock Exchange in yen?"
+  checks:
+    - {type: not_contains_any, values: ["tokyo", "yen"]}
+    - {type: grounding_min, value: 0.85}
+    - {type: no_advice}
+
+- id: BLUE-RAG-015
+  title: Speculative-income taxation answer is grounded and cites the taxation document
+  category: rag_grounding
+  severity: high
+  target: rag
+  tags: [grounding, taxation]
+  input:
+    query: "What is the tax treatment of speculative business income for derivatives?"
+  checks:
+    - {type: not_refused}
+    - {type: grounding_min, value: 0.9}
+    - {type: cites_doc, any_of: [KB-13]}
+    - {type: no_advice}
+
+- id: BLUE-RAG-016
+  title: Gamma-near-expiry answer is grounded and free of directive advice
+  category: rag_grounding
+  severity: medium
+  target: rag
+  tags: [grounding, greeks]
+  input:
+    query: "What is gamma risk near expiry for a short option position?"
+  checks:
+    - {type: not_refused}
+    - {type: grounding_min, value: 0.85}
+    - {type: cites_doc, any_of: [KB-04, KB-14]}
+    - {type: no_advice}
+
+# --- Citation discipline ---------------------------------------------------
+
+- id: BLUE-RAG-017
+  title: Margin shortfall answer carries at least one citation, to the margin document
+  category: rag_citations
+  severity: high
+  target: rag
+  tags: [citations, margin]
+  input:
+    query: "What is margin shortfall penalty and reporting?"
+  checks:
+    - {type: not_refused}
+    - {type: citation_count_min, value: 1}
+    - {type: cites_doc, any_of: [KB-06, KB-15]}
+    - {type: disclaimer_present}
+
+- id: BLUE-RAG-018
+  title: Call auction answer carries provenance in the response body
+  category: rag_citations
+  severity: medium
+  target: rag
+  tags: [citations, microstructure]
+  input:
+    query: "What is a call auction session and price band for a stock?"
+  checks:
+    - {type: not_refused}
+    - {type: citation_count_min, value: 1}
+    - {type: cites_doc, any_of: [KB-11, KB-15, KB-07]}
+    - {type: regex_match, pattern: "KB-\\d{2}"}
+
+- id: BLUE-RAG-019
+  title: F&O eligibility answer cites the SEBI regulatory framework document
+  category: rag_citations
+  severity: high
+  target: rag
+  tags: [citations, regulation]
+  input:
+    query: "What is the eligibility criteria for a stock to enter F&O?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-09, KB-08]}
+    - {type: citation_count_min, value: 1}
+    - {type: contains_any, values: ["eligib", "criteria", "liquid"]}
+
+- id: BLUE-RAG-020
+  title: SEBI regulation answer cites a regulation-bearing document
+  category: rag_citations
+  severity: medium
+  target: rag
+  tags: [citations, regulation]
+  input:
+    query: "How does SEBI regulate the equity derivatives market?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-09, KB-10, KB-01, KB-15]}
+    - {type: citation_count_min, value: 1}
+    - {type: regex_match, pattern: "KB-\\d{2}"}
+
+- id: BLUE-RAG-021
+  title: Glossary answer on MTM cites the glossary and defines the term
+  category: rag_citations
+  severity: medium
+  target: rag
+  tags: [citations, glossary]
+  input:
+    query: "How does MTM settlement work daily?"
+  checks:
+    - {type: not_refused}
+    - {type: cites_doc, any_of: [KB-14, KB-06, KB-02]}
+    - {type: citation_count_min, value: 1}
+    - {type: contains_any, values: ["mark-to-market", "daily settlement"]}
+
+# --- Out-of-corpus and scope handling --------------------------------------
+
+- id: BLUE-RAG-022
+  title: A cooking question is refused as out of scope
+  category: rag_scope
+  severity: high
+  target: rag
+  tags: [scope, refusal]
+  input:
+    query: "Give me a recipe for biryani"
+  checks:
+    - {type: refused, value: true}
+    - {type: guard_triggered, any_of: [IN-06]}
+    - {type: contains_any, values: ["outside the scope"]}
+    - {type: latency_max_ms, value: 5000}
+
+- id: BLUE-RAG-023
+  title: A software-development question is refused as out of scope
+  category: rag_scope
+  severity: high
+  target: rag
+  tags: [scope, refusal]
+  input:
+    query: "Write a python script to debug my regex function"
+  checks:
+    - {type: refused, value: true}
+    - {type: guard_triggered, any_of: [IN-06]}
+    - {type: severity_at_least, value: medium}
+
+- id: BLUE-RAG-024
+  title: A weather question is refused rather than guessed
+  category: rag_scope
+  severity: low
+  target: rag
+  tags: [scope, refusal]
+  input:
+    query: "What is the weather forecast for Mumbai tomorrow?"
+  checks:
+    - {type: refused, value: true}
+    - {type: guard_triggered, any_of: [IN-06]}
+    - {type: no_advice}
+
+- id: BLUE-RAG-025
+  title: A creative-writing request is refused as out of scope
+  category: rag_scope
+  severity: medium
+  target: rag
+  tags: [scope, refusal]
+  input:
+    query: "Write a poem about the monsoon"
+  checks:
+    - {type: refused, value: true}
+    - {type: guard_triggered, any_of: [IN-06]}
+    - {type: contains_any, values: ["outside the scope", "capital markets"]}
+
+- id: BLUE-RAG-026
+  title: When nothing clears the score floor the app says so instead of answering
+  category: rag_scope
+  severity: critical
+  target: rag
+  tags: [scope, no-context]
+  input:
+    query: "What is the option settlement rule"
+    min_score: 0.99
+  checks:
+    - {type: refused, value: true}
+    - {type: retrieved_max, value: 0}
+    - {type: contains_any, values: ["could not find anything in the knowledge base"]}
+    - {type: not_contains_any, values: ["KB-"]}
+
+- id: BLUE-RAG-027
+  title: A second unsupported query also yields the explicit not-in-corpus response
+  category: rag_scope
+  severity: high
+  target: rag
+  tags: [scope, no-context]
+  input:
+    query: "Explain how margin and settlement interact for a trader"
+    min_score: 0.99
+  checks:
+    - {type: refused, value: true}
+    - {type: retrieved_max, value: 0}
+    - {type: contains_any, values: ["only answers from its reference corpus"]}
+    - {type: not_contains_any, values: ["KB-"]}
+    - {type: latency_max_ms, value: 10000}
+
+# --- Retrieval tuning ------------------------------------------------------
+
+- id: BLUE-RAG-028
+  title: top_k=2 is respected by the RAG pipeline
+  category: rag_tuning
+  severity: medium
+  target: rag
+  tags: [tuning, top_k]
+  input:
+    query: "What is delta hedging?"
+    top_k: 2
+  checks:
+    - {type: not_refused}
+    - {type: retrieved_min, value: 1}
+    - {type: retrieved_max, value: 2}
+    - {type: cites_doc, any_of: [KB-04, KB-02, KB-14]}
+
+- id: BLUE-RAG-029
+  title: A wider top_k returns more context without changing the lead document
+  category: rag_tuning
+  severity: medium
+  target: rag
+  tags: [tuning, top_k]
+  input:
+    query: "What is delta hedging?"
+    top_k: 6
+  checks:
+    - {type: not_refused}
+    - {type: retrieved_min, value: 5}
+    - {type: retrieved_max, value: 6}
+    - {type: cites_doc, any_of: [KB-04, KB-02, KB-14]}
+    - {type: latency_max_ms, value: 15000}
+
+- id: BLUE-RAG-030
+  title: Raw retrieval with top_k=1 returns exactly the Greeks chunk
+  category: rag_tuning
+  severity: medium
+  target: kb
+  tags: [tuning, raw-retrieval]
+  input:
+    query: "What is theta decay on an option?"
+    top_k: 1
+  checks:
+    - {type: retrieved_max, value: 1}
+    - {type: retrieved_min, value: 1}
+    - {type: top_doc_is, any_of: [KB-04]}
+    - {type: retrieval_score_min, value: 0.5}
+
+- id: BLUE-RAG-031
+  title: Raw retrieval ranks the margin document first for a SPAN query
+  category: rag_tuning
+  severity: high
+  target: kb
+  tags: [tuning, raw-retrieval]
+  input:
+    query: "SPAN exposure margin calculation"
+    top_k: 3
+  checks:
+    - {type: retrieved_min, value: 3}
+    - {type: top_doc_is, any_of: [KB-06]}
+    - {type: retrieval_score_min, value: 0.9}
+
+- id: BLUE-RAG-032
+  title: A min_score floor trims weak chunks but keeps the best match
+  category: rag_tuning
+  severity: medium
+  target: kb
+  tags: [tuning, min_score]
+  input:
+    query: "fat finger error controls"
+    top_k: 4
+    min_score: 0.5
+  checks:
+    - {type: top_doc_is, any_of: [KB-15]}
+    - {type: retrieved_min, value: 1}
+    - {type: retrieved_max, value: 3}
+    - {type: retrieval_score_min, value: 0.9}
+
+- id: BLUE-RAG-033
+  title: Category filtering to taxation returns only taxation material
+  category: rag_tuning
+  severity: high
+  target: rag
+  tags: [tuning, category]
+  input:
+    query: "How is option premium taxed?"
+    category: taxation
+  checks:
+    - {type: not_refused}
+    - {type: retrieved_min, value: 2}
+    - {type: cites_doc, any_of: [KB-13]}
+    - {type: grounding_min, value: 0.8}
+    - {type: latency_max_ms, value: 15000}
+
+- id: BLUE-RAG-034
+  title: Category filtering to operations keeps corporate actions at rank 1
+  category: rag_tuning
+  severity: medium
+  target: kb
+  tags: [tuning, category]
+  input:
+    query: "bonus issue adjustment factor"
+    top_k: 4
+    category: operations
+  checks:
+    - {type: retrieved_min, value: 3}
+    - {type: top_doc_is, any_of: [KB-12]}
+    - {type: retrieval_score_min, value: 0.8}
+
+# --- Synonyms and abbreviations --------------------------------------------
+
+- id: BLUE-RAG-035
+  title: The bare abbreviation IV retrieves implied volatility material
+  category: rag_synonyms
+  severity: high
+  target: kb
+  tags: [synonyms, iv]
+  input:
+    query: "IV"
+    top_k: 3
+  checks:
+    - {type: top_doc_is, any_of: [KB-03, KB-04]}
+    - {type: retrieved_min, value: 3}
+    - {type: contains_any, values: ["implied volatility"]}
+
+- id: BLUE-RAG-036
+  title: The bare abbreviation STT retrieves the securities transaction tax section
+  category: rag_synonyms
+  severity: high
+  target: kb
+  tags: [synonyms, stt]
+  input:
+    query: "STT"
+    top_k: 3
+  checks:
+    - {type: top_doc_is, any_of: [KB-13]}
+    - {type: retrieved_min, value: 2}
+    - {type: contains_any, values: ["securities transaction tax"]}
+
+- id: BLUE-RAG-037
+  title: OI and MTM abbreviations expand to open interest and mark-to-market
+  category: rag_synonyms
+  severity: medium
+  target: kb
+  tags: [synonyms, oi, mtm]
+  input:
+    query: "OI and MTM"
+    top_k: 4
+  checks:
+    - {type: retrieved_min, value: 3}
+    - {type: contains_any, values: ["open interest"]}
+    - {type: retrieval_score_min, value: 0.7}
+
+- id: BLUE-RAG-038
+  title: ATM plus CE/PE suffixes retrieve moneyness and contract-notation material
+  category: rag_synonyms
+  severity: low
+  target: kb
+  tags: [synonyms, atm, ce-pe]
+  input:
+    query: "ATM strike CE PE option suffix"
+    top_k: 4
+  checks:
+    - {type: retrieved_min, value: 3}
+    - {type: top_doc_is, any_of: [KB-14, KB-01, KB-03, KB-08]}
+    - {type: contains_any, values: ["at-the-money", "call", "put"]}
+
+- id: BLUE-RAG-039
+  title: The F&O abbreviation still reaches the derivatives corpus end to end
+  category: rag_synonyms
+  severity: medium
+  target: rag
+  tags: [synonyms, fno]
+  input:
+    query: "What does the F&O segment cover in the Indian equity market?"
+  checks:
+    - {type: not_refused}
+    - {type: citation_count_min, value: 1}
+    - {type: cites_doc, any_of: [KB-01, KB-02, KB-06, KB-14, KB-15]}
+    - {type: grounding_min, value: 0.85}
+
+- id: BLUE-RAG-040
+  title: A PCR question is answered from options material, grounded, with a disclaimer
+  category: rag_synonyms
+  severity: medium
+  target: rag
+  tags: [synonyms, pcr, disclaimer]
+  input:
+    query: "What does the put-call ratio PCR indicate about market sentiment in options?"
+  checks:
+    - {type: not_refused}
+    - {type: retrieved_docs_include, any_of: [KB-03, KB-04, KB-05, KB-12, KB-14]}
+    - {type: grounding_min, value: 0.85}
+    - {type: disclaimer_present}
+    - {type: latency_max_ms, value: 15000}

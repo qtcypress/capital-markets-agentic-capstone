@@ -1,0 +1,5 @@
+# Requirements for a Hugging Face Space on the GRADIO SDK.
+# Gradio is present only to satisfy the SDK and render a small landing page;
+# the application itself is the FastAPI console in app/.
+-r requirements.txt
+gradio>=5.0

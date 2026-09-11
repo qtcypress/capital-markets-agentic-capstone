@@ -1,0 +1,685 @@
+# ---------------------------------------------------------------------------
+# BLUE TEAM — derivatives maths and tool contracts
+# ---------------------------------------------------------------------------
+# Forty positive cases in two halves:
+#
+#   BLUE-MATH-001..024   the pure functions in app/market/derivatives.py.
+#                        Exact-value assertions are correct here because the
+#                        module is deterministic. Covers Black-Scholes pricing,
+#                        put-call parity, moneyness and edge cases, Greek sign
+#                        and range invariants, the implied-vol round trip,
+#                        strategy payoffs, margin arithmetic, PCR and max pain.
+#
+#   BLUE-TOOL-001..016   the tool registry in app/agents/tools.py. The happy
+#                        path returns ok with the documented result SHAPE, the
+#                        market-data tools always declare provenance, and bad
+#                        arguments return the documented error codes.
+#
+# Conventions used throughout:
+#   * black_scholes returns vega per 1 volatility point and theta per calendar
+#     day; the Greek range assertions are scaled accordingly.
+#   * t = 0.0821917808 years is 30 calendar days.
+#   * No case asserts a live market level. Where a tool would otherwise fetch a
+#     price, `spot` is supplied so the result is deterministic; the data tools
+#     assert types, ranges and provenance only.
+#   * The configured risk-free rate is 0.065; NIFTY has lot size 75 and a
+#     50-point strike step. Both are asserted rather than assumed where used.
+#   * `target: math` surfaces a raised exception as the Python exception class
+#     name, hence `error_code: ValueError` on the invalid-input case.
+#
+# Run:
+#   cd /home/claude/qtcap
+#   python3 tools/run_suite.py blue --file tests/suites/blue/02-math-and-tools.yaml
+# ---------------------------------------------------------------------------
+
+# --- Black-Scholes pricing -------------------------------------------------
+
+- id: BLUE-MATH-001
+  title: ATM Black-Scholes call price and its intrinsic/time-value split
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [black_scholes, call]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_close_to, path: "result.price", value: 469.3465, tolerance: 0.05}
+    - {type: json_path_equals, path: "result.intrinsic", value: 0}
+    - {type: json_path_close_to, path: "result.time_value", value: 469.3465, tolerance: 0.05}
+
+- id: BLUE-MATH-002
+  title: ATM Black-Scholes put is cheaper than the matching call under positive carry
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [black_scholes, put]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: put}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_close_to, path: "result.price", value: 336.141, tolerance: 0.05}
+    - {type: json_path_between, path: "result.price", min: 1, max: 469.3465}
+    - {type: json_path_equals, path: "result.intrinsic", value: 0}
+
+- id: BLUE-MATH-003
+  title: Put-call parity holds — call minus put equals spot minus the discounted strike
+  category: pricing_math
+  severity: critical
+  target: math
+  tags: [parity, invariant]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    # put 336.141 + (S - K*exp(-rT)) = 336.141 + 133.2055 = 469.3465
+    - {type: json_path_close_to, path: "result.price", value: 469.3465, tolerance: 0.01}
+    - {type: json_path_close_to, path: "result.d1", value: 0.153175, tolerance: 0.0001}
+    - {type: json_path_close_to, path: "result.d2", value: 0.113038, tolerance: 0.0001}
+
+- id: BLUE-MATH-004
+  title: Deep ITM call approaches its intrinsic value and a delta near one
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [moneyness, itm]
+  input:
+    function: black_scholes
+    arguments: {spot: 26000, strike: 24000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_close_to, path: "result.price", value: 2133.8717, tolerance: 0.05}
+    - {type: json_path_equals, path: "result.intrinsic", value: 2000}
+    - {type: json_path_between, path: "result.delta", min: 0.95, max: 1.0}
+
+- id: BLUE-MATH-005
+  title: Deep OTM call is worth almost nothing and carries almost no delta
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [moneyness, otm]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 30000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_close_to, path: "result.price", value: 0.0012, tolerance: 0.01}
+    - {type: json_path_between, path: "result.delta", min: 0.0, max: 0.01}
+    - {type: json_path_equals, path: "result.intrinsic", value: 0}
+
+- id: BLUE-MATH-006
+  title: At zero time to expiry the option is worth exactly its intrinsic value
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [edge_case, expiry]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 24500, t: 0, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.price", value: 500}
+    - {type: json_path_equals, path: "result.time_value", value: 0}
+    - {type: json_path_equals, path: "result.gamma", value: 0}
+    - {type: json_path_equals, path: "result.vega", value: 0}
+
+- id: BLUE-MATH-007
+  title: At zero volatility the put collapses to intrinsic with delta minus one
+  category: pricing_math
+  severity: high
+  target: math
+  tags: [edge_case, zero_vol]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25500, t: 0.0821917808, r: 0.065, sigma: 0, option_type: put}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.price", value: 500}
+    - {type: json_path_equals, path: "result.delta", value: -1}
+    - {type: json_path_equals, path: "result.theta", value: 0}
+
+- id: BLUE-MATH-008
+  title: Implied volatility round-trips — price at 14% vol, solve, get 14% back
+  category: pricing_math
+  severity: critical
+  target: math
+  tags: [implied_vol, round_trip]
+  input:
+    function: implied_volatility
+    arguments: {market_price: 469.3465, spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.converged", value: true}
+    - {type: json_path_close_to, path: "result.implied_vol", value: 0.14, tolerance: 0.0005}
+    - {type: json_path_close_to, path: "result.implied_vol_pct", value: 14.0, tolerance: 0.05}
+
+# --- Greek invariants ------------------------------------------------------
+
+- id: BLUE-MATH-009
+  title: Long call Greeks obey their signs — delta 0..1, gamma and vega positive, theta negative
+  category: greeks_math
+  severity: critical
+  target: math
+  tags: [greeks, call, invariant]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: call}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_between, path: "result.delta", min: 0.0, max: 1.0}
+    - {type: json_path_between, path: "result.gamma", min: 0.0000001, max: 1.0}
+    - {type: json_path_between, path: "result.vega", min: 0.01, max: 100000}
+    - {type: json_path_between, path: "result.theta", min: -100000, max: -0.0001}
+    - {type: json_path_between, path: "result.rho", min: 0.0001, max: 100000}
+
+- id: BLUE-MATH-010
+  title: Long put Greeks obey their signs — delta -1..0, gamma and vega positive, rho negative
+  category: greeks_math
+  severity: critical
+  target: math
+  tags: [greeks, put, invariant]
+  input:
+    function: black_scholes
+    arguments: {spot: 25000, strike: 25000, t: 0.0821917808, r: 0.065, sigma: 0.14, option_type: put}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_between, path: "result.delta", min: -1.0, max: 0.0}
+    # gamma and vega are strike-symmetric: identical to the call in BLUE-MATH-009
+    - {type: json_path_close_to, path: "result.gamma", value: 0.00039295, tolerance: 0.0000001}
+    - {type: json_path_close_to, path: "result.vega", value: 28.259823, tolerance: 0.001}
+    - {type: json_path_between, path: "result.theta", min: -100000, max: -0.0001}
+    - {type: json_path_between, path: "result.rho", min: -100000, max: -0.0001}
+
+# --- Strategy payoffs ------------------------------------------------------
+
+- id: BLUE-MATH-011
+  title: Long call is a debit with bounded loss and unlimited upside
+  category: strategy_payoff
+  severity: critical
+  target: math
+  tags: [strategy, long_call]
+  input:
+    function: build_strategy
+    arguments: {strategy: long_call, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_equals, path: "result.max_profit", value: unlimited}
+    - {type: json_path_close_to, path: "result.max_loss", value: -35201.25, tolerance: 5}
+    - {type: json_path_length_min, path: "result.breakevens", value: 1}
+
+- id: BLUE-MATH-012
+  title: Naked short call is a credit with unlimited loss and a risk note saying so
+  category: strategy_payoff
+  severity: critical
+  target: math
+  tags: [strategy, short_call, unlimited_risk]
+  input:
+    function: build_strategy
+    arguments: {strategy: short_call, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: credit}
+    - {type: json_path_equals, path: "result.max_loss", value: unlimited}
+    - {type: json_path_close_to, path: "result.max_profit", value: 35201.25, tolerance: 5}
+    - {type: json_path_type, path: "result.risk_note", value: string}
+
+- id: BLUE-MATH-013
+  title: Long straddle is a debit with two breakevens either side of the ATM strike
+  category: strategy_payoff
+  severity: high
+  target: math
+  tags: [strategy, straddle]
+  input:
+    function: build_strategy
+    arguments: {strategy: long_straddle, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_length_min, path: "result.breakevens", value: 2}
+    - {type: json_path_close_to, path: "result.breakevens[0]", value: 24194.51, tolerance: 1}
+    - {type: json_path_close_to, path: "result.breakevens[1]", value: 25805.49, tolerance: 1}
+    - {type: json_path_close_to, path: "result.max_loss", value: -60411.75, tolerance: 10}
+
+- id: BLUE-MATH-014
+  title: Long strangle buys two OTM legs and costs less than the straddle
+  category: strategy_payoff
+  severity: high
+  target: math
+  tags: [strategy, strangle]
+  input:
+    function: build_strategy
+    arguments: {strategy: long_strangle, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_length_min, path: "result.legs", value: 2}
+    - {type: json_path_equals, path: "result.legs[0].strike", value: 25100}
+    - {type: json_path_equals, path: "result.legs[1].strike", value: 24900}
+    - {type: json_path_close_to, path: "result.max_loss", value: -53245.5, tolerance: 10}
+
+- id: BLUE-MATH-015
+  title: Bull call spread is a bounded debit with a single breakeven
+  category: strategy_payoff
+  severity: high
+  target: math
+  tags: [strategy, spread, bounded]
+  input:
+    function: build_strategy
+    arguments: {strategy: bull_call_spread, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_close_to, path: "result.max_profit", value: 3581.25, tolerance: 5}
+    - {type: json_path_close_to, path: "result.max_loss", value: -3918.75, tolerance: 5}
+    - {type: json_path_length_min, path: "result.breakevens", value: 1}
+
+- id: BLUE-MATH-016
+  title: Bear put spread is a bounded debit built from two put legs
+  category: strategy_payoff
+  severity: high
+  target: math
+  tags: [strategy, spread, bounded]
+  input:
+    function: build_strategy
+    arguments: {strategy: bear_put_spread, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_close_to, path: "result.max_profit", value: 4252.5, tolerance: 5}
+    - {type: json_path_close_to, path: "result.max_loss", value: -3247.5, tolerance: 5}
+    - {type: json_path_equals, path: "result.legs[0].type", value: put}
+    - {type: json_path_equals, path: "result.legs[1].type", value: put}
+
+- id: BLUE-MATH-017
+  title: Iron condor is a four-leg credit position with bounded profit and loss
+  category: strategy_payoff
+  severity: high
+  target: math
+  tags: [strategy, iron_condor, credit]
+  input:
+    function: build_strategy
+    arguments: {strategy: iron_condor, spot: 25000, strike_step: 50, t: 0.0821917808, r: 0.065, sigma: 0.14, lot_size: 75}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position_type", value: credit}
+    - {type: json_path_length_min, path: "result.legs", value: 4}
+    - {type: json_path_close_to, path: "result.max_profit", value: 6579.0, tolerance: 5}
+    - {type: json_path_close_to, path: "result.max_loss", value: -921.0, tolerance: 5}
+    - {type: json_path_length_min, path: "result.breakevens", value: 2}
+
+- id: BLUE-MATH-018
+  title: PCR above 1.3 reads as bullish/oversold and carries a not-a-signal caveat
+  category: strategy_payoff
+  severity: medium
+  target: math
+  tags: [pcr, sentiment]
+  input:
+    function: pcr_interpretation
+    arguments: {pcr: 1.45}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.reading", value: "bullish/oversold"}
+    - {type: json_path_equals, path: "result.pcr", value: 1.45}
+    - {type: json_path_type, path: "result.caveat", value: string}
+
+- id: BLUE-MATH-019
+  title: Max pain picks the strike with the lowest total writer payout
+  category: strategy_payoff
+  severity: medium
+  target: math
+  tags: [max_pain, open_interest]
+  input:
+    function: max_pain
+    arguments:
+      strikes:
+        - {strike: 24800, call_oi: 1000, put_oi: 500}
+        - {strike: 24900, call_oi: 1500, put_oi: 900}
+        - {strike: 25000, call_oi: 2000, put_oi: 2000}
+        - {strike: 25100, call_oi: 900, put_oi: 1500}
+        - {strike: 25200, call_oi: 500, put_oi: 1000}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.max_pain", value: 25000}
+    - {type: json_path_close_to, path: "result.total_writer_payout", value: 700000, tolerance: 1}
+    - {type: json_path_type, path: "result.note", value: string}
+
+# --- Margin ----------------------------------------------------------------
+
+- id: BLUE-MATH-020
+  title: Long futures margin is SPAN 12% plus exposure 3% of contract value, with a disclaimer
+  category: margin_math
+  severity: critical
+  target: math
+  tags: [margin, futures, disclaimer]
+  input:
+    function: calculate_margin
+    arguments: {symbol: NIFTY, spot: 25000, lot_size: 75, lots: 2, position: futures_long}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.contract_value", value: 3750000}
+    - {type: json_path_equals, path: "result.span_margin", value: 450000}
+    - {type: json_path_equals, path: "result.exposure_margin", value: 112500}
+    - {type: json_path_equals, path: "result.total_margin", value: 562500}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+
+- id: BLUE-MATH-021
+  title: Short futures margin matches long futures — direction does not change the requirement
+  category: margin_math
+  severity: high
+  target: math
+  tags: [margin, futures]
+  input:
+    function: calculate_margin
+    arguments: {symbol: NIFTY, spot: 25000, lot_size: 75, lots: 2, position: futures_short}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.position", value: futures_short}
+    - {type: json_path_equals, path: "result.total_margin", value: 562500}
+    - {type: json_path_equals, path: "result.premium_receivable", value: 0}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+
+- id: BLUE-MATH-022
+  title: Long option margin equals the premium outgo with no SPAN or exposure component
+  category: margin_math
+  severity: high
+  target: math
+  tags: [margin, option_buy]
+  input:
+    function: calculate_margin
+    arguments: {symbol: NIFTY, spot: 25000, lot_size: 75, lots: 2, position: option_buy, premium: 150}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.total_margin", value: 22500}
+    - {type: json_path_equals, path: "result.span_margin", value: 0}
+    - {type: json_path_equals, path: "result.exposure_margin", value: 0}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+
+- id: BLUE-MATH-023
+  title: Short option margin uses the 13% SPAN proxy and reports the premium received
+  category: margin_math
+  severity: critical
+  target: math
+  tags: [margin, option_sell]
+  input:
+    function: calculate_margin
+    arguments: {symbol: NIFTY, spot: 25000, lot_size: 75, lots: 2, position: option_sell, premium: 150}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.span_margin", value: 487500}
+    - {type: json_path_equals, path: "result.total_margin", value: 600000}
+    - {type: json_path_equals, path: "result.premium_receivable", value: 22500}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+
+- id: BLUE-MATH-024
+  title: A zero-lot margin request is rejected rather than returning a zero margin
+  category: margin_math
+  severity: high
+  target: math
+  tags: [margin, validation]
+  input:
+    function: calculate_margin
+    arguments: {symbol: NIFTY, spot: 25000, lot_size: 75, lots: 0, position: futures_long}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: ValueError}
+    - {type: json_path_type, path: "result", value: "null"}
+
+# ---------------------------------------------------------------------------
+# Tool contracts
+# ---------------------------------------------------------------------------
+
+- id: BLUE-TOOL-001
+  title: get_contract_spec returns the NIFTY contract master fields
+  category: tool_contract
+  severity: high
+  target: tool
+  tags: [contract_spec]
+  input:
+    tool: get_contract_spec
+    arguments: {symbol: NIFTY}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_equals, path: "result.strike_step", value: 50}
+    - {type: json_path_type, path: "result.tick", value: number}
+    - {type: json_path_type, path: "result.expiry_day", value: string}
+
+- id: BLUE-TOOL-002
+  title: price_option with an explicit spot returns the deterministic Black-Scholes value
+  category: tool_contract
+  severity: critical
+  target: tool
+  tags: [pricing]
+  input:
+    tool: price_option
+    arguments: {symbol: NIFTY, strike: 25000, option_type: call, spot: 25000, volatility: 0.14}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_close_to, path: "result.price", value: 469.3465, tolerance: 0.05}
+    - {type: json_path_equals, path: "result.moneyness", value: ATM}
+    - {type: json_path_equals, path: "result.days_to_expiry", value: 30}
+    - {type: json_path_equals, path: "result.risk_free_rate", value: 0.065}
+
+- id: BLUE-TOOL-003
+  title: calc_greeks scales per-unit Greeks to the position by lots times lot size
+  category: tool_contract
+  severity: high
+  target: tool
+  tags: [greeks, position]
+  input:
+    tool: calc_greeks
+    arguments: {symbol: NIFTY, strike: 25000, option_type: put, spot: 25000, volatility: 0.14, lots: 2}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_equals, path: "result.quantity", value: 150}
+    - {type: json_path_type, path: "result.position_greeks", value: object}
+    - {type: json_path_close_to, path: "result.position_greeks.delta", value: -65.8695, tolerance: 0.05}
+    - {type: json_path_type, path: "result.interpretation.theta", value: string}
+
+- id: BLUE-TOOL-004
+  title: implied_volatility tool round-trips a Black-Scholes premium back to 14%
+  category: tool_contract
+  severity: high
+  target: tool
+  tags: [implied_vol]
+  input:
+    tool: implied_volatility
+    arguments: {symbol: NIFTY, strike: 25000, market_price: 469.3465, option_type: call, spot: 25000}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.converged", value: true}
+    - {type: json_path_close_to, path: "result.implied_vol", value: 0.14, tolerance: 0.001}
+    - {type: json_path_type, path: "result.iterations", value: number}
+
+- id: BLUE-TOOL-005
+  title: calc_margin returns the full margin breakdown including the mandatory disclaimer
+  category: tool_contract
+  severity: critical
+  target: tool
+  tags: [margin, disclaimer]
+  input:
+    tool: calc_margin
+    arguments: {symbol: NIFTY, position: futures_long, lots: 2, spot: 25000}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_equals, path: "result.total_margin", value: 562500}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+    - {type: json_path_type, path: "result.methodology", value: string}
+
+- id: BLUE-TOOL-006
+  title: payoff_profile returns legs, breakevens and a thinned payoff curve
+  category: tool_contract
+  severity: high
+  target: tool
+  tags: [payoff, strategy]
+  input:
+    tool: payoff_profile
+    arguments: {symbol: NIFTY, strategy: bull_call_spread, spot: 25000, volatility: 0.14}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_length_min, path: "result.legs", value: 2}
+    - {type: json_path_length_min, path: "result.payoff_curve", value: 10}
+    - {type: json_path_type, path: "result.payoff_curve[0].pnl", value: number}
+    - {type: json_path_type, path: "result.disclaimer", value: string}
+
+- id: BLUE-TOOL-007
+  title: search_knowledge_base honours top_k and returns scored, attributed passages
+  category: tool_contract
+  severity: high
+  target: tool
+  tags: [knowledge_base]
+  input:
+    tool: search_knowledge_base
+    arguments: {query: "put-call parity", top_k: 3}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_type, path: "result.results", value: array}
+    - {type: json_path_length_min, path: "result.results", value: 1}
+    - {type: json_path_type, path: "result.results[0].doc_id", value: string}
+    - {type: json_path_type, path: "result.results[0].score", value: number}
+
+# --- Provenance on market-data tools ---------------------------------------
+
+- id: BLUE-TOOL-008
+  title: get_quote reports a numeric last price and a declared data source
+  category: data_provenance
+  severity: critical
+  target: tool
+  tags: [quote, provenance]
+  input:
+    tool: get_quote
+    arguments: {symbol: NIFTY}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_type, path: "result.last_price", value: number}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+    - {type: json_path_in, path: "result._provenance.source", any_of: [live, snapshot, synthetic]}
+
+- id: BLUE-TOOL-009
+  title: get_option_chain returns windowed strikes, a PCR reading and max pain, with provenance
+  category: data_provenance
+  severity: critical
+  target: tool
+  tags: [option_chain, provenance]
+  input:
+    tool: get_option_chain
+    arguments: {symbol: NIFTY, strikes_around_atm: 3}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.window_applied", value: 3}
+    - {type: json_path_type, path: "result.strikes", value: array}
+    - {type: json_path_type, path: "result.strikes[0].strike", value: number}
+    - {type: json_path_type, path: "result.pcr_reading.reading", value: string}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+
+- id: BLUE-TOOL-010
+  title: get_futures returns spot, fair value and basis with a declared data source
+  category: data_provenance
+  severity: high
+  target: tool
+  tags: [futures, provenance]
+  input:
+    tool: get_futures
+    arguments: {symbol: NIFTY}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_type, path: "result.spot", value: number}
+    - {type: json_path_type, path: "result.fair_value", value: number}
+    - {type: json_path_type, path: "result.basis", value: number}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+
+- id: BLUE-TOOL-011
+  title: get_fx_rate returns a positive reference rate with a declared data source
+  category: data_provenance
+  severity: high
+  target: tool
+  tags: [fx, provenance]
+  input:
+    tool: get_fx_rate
+    arguments: {base: USD, quote: INR}
+  checks:
+    - {type: tool_ok}
+    - {type: json_path_equals, path: "result.base", value: USD}
+    - {type: json_path_between, path: "result.rate", min: 0.0001, max: 100000}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+    - {type: json_path_in, path: "result._provenance.source", any_of: [live, snapshot, synthetic]}
+
+# --- Argument validation ---------------------------------------------------
+
+- id: BLUE-TOOL-012
+  title: get_quote without a symbol returns missing_argument
+  category: tool_validation
+  severity: high
+  target: tool
+  tags: [validation, missing_argument]
+  input:
+    tool: get_quote
+    arguments: {}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: missing_argument}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-TOOL-013
+  title: A non-string symbol returns type_error rather than being coerced
+  category: tool_validation
+  severity: high
+  target: tool
+  tags: [validation, type_error]
+  input:
+    tool: get_quote
+    arguments: {symbol: 123}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: type_error}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-TOOL-014
+  title: An oversized strike window returns out_of_range
+  category: tool_validation
+  severity: high
+  target: tool
+  tags: [validation, out_of_range]
+  input:
+    tool: get_option_chain
+    arguments: {symbol: NIFTY, strikes_around_atm: 99}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: out_of_range}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-TOOL-015
+  title: A symbol outside the F&O contract master returns unknown_symbol
+  category: tool_validation
+  severity: high
+  target: tool
+  tags: [validation, unknown_symbol]
+  input:
+    tool: calc_margin
+    arguments: {symbol: ZZTOP, position: futures_long, lots: 1, spot: 1000}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: unknown_symbol}
+    - {type: json_path_type, path: "error.message", value: string}
+
+- id: BLUE-TOOL-016
+  title: Calling a tool that is not in the registry returns unknown_tool
+  category: tool_validation
+  severity: high
+  target: tool
+  tags: [validation, unknown_tool]
+  input:
+    tool: place_order
+    arguments: {symbol: NIFTY, qty: 75}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: unknown_tool}
+    - {type: json_path_type, path: "error.message", value: string}

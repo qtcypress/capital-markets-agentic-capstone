@@ -1,0 +1,40 @@
+# Render blueprint — deploy this repo as a free web service.
+#
+# Render reads this file automatically when you create a Blueprint from the
+# repository, so there is nothing to configure by hand.
+#
+#   Render dashboard -> New -> Blueprint -> pick this repo -> Apply
+#
+# Notes for whoever maintains this:
+#  * plan: free spins the service down after inactivity and takes ~30s to wake.
+#    For a classroom that is fine — the first student to open it wakes it.
+#  * No API keys are set here on purpose. Students bring their own from the
+#    browser, so the service holds no credentials.
+services:
+  - type: web
+    name: capital-markets-agentic-capstone
+    runtime: python
+    plan: free
+    region: singapore          # closest to Hyderabad; oregon/frankfurt also fine
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Rate limits, request-body caps and strict error redaction — everything a
+      # shared class URL needs and a laptop does not.
+      - key: QTCAP_PUBLIC_MODE
+        value: "1"
+      - key: QTCAP_RATE_PER_MIN
+        value: "40"
+      - key: QTCAP_HEAVY_RATE_PER_MIN
+        value: "8"
+      # Live market APIs, falling back to snapshot then to labelled synthetic.
+      - key: QTCAP_MARKET_MODE
+        value: auto
+      # The server's own default backend. Students override it per request with
+      # their own free key, so this stays on the offline stub.
+      - key: QTCAP_LLM_PROVIDER
+        value: stub
+      - key: PYTHON_VERSION
+        value: "3.11.9"

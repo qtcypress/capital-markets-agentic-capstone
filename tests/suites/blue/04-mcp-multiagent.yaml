@@ -1,0 +1,659 @@
+# Blue-team suite 04 — MCP layer and multi-agent system.
+#
+# MCP cases prove three things over the real JSON-RPC surface: every tool
+# resolves to the server that owns it, valid calls return the documented result
+# shape with provenance, and bad arguments come back as an in-band structured
+# error (never a transport failure).
+#
+# Multi-agent cases prove decomposition, specialist routing, the cross-agent
+# tool boundary, and honest synthesis (multiple specialists represented, failed
+# subtasks surfaced, no advice language).
+#
+# Market data is never asserted at a price level — only structure, provenance
+# and contract invariants.
+
+# ---------------------------------------------------------------------------
+# MCP — server routing (all 12 tools across the three servers)
+# ---------------------------------------------------------------------------
+- id: BLUE-MCP-001
+  title: get_quote resolves to the market_data server and returns a priced quote
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, market_data]
+  input:
+    tool: get_quote
+    arguments: {symbol: NIFTY}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_type, path: "result.last_price", value: number}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+    - {type: latency_max_ms, value: 20000}
+
+- id: BLUE-MCP-002
+  title: get_option_chain resolves to market_data and returns a strike ladder
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, market_data, option_chain]
+  input:
+    tool: get_option_chain
+    arguments: {symbol: NIFTY, strikes_around_atm: 3}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_type, path: "result.strikes", value: array}
+    - {type: json_path_length_min, path: "result.strikes", value: 3}
+    - {type: json_path_type, path: "result.strikes[0].strike", value: number}
+    - {type: json_path_equals, path: "result.window_applied", value: 3}
+
+- id: BLUE-MCP-003
+  title: get_futures resolves to market_data and reports basis and days to expiry
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, market_data, futures]
+  input:
+    tool: get_futures
+    arguments: {symbol: BANKNIFTY}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_equals, path: "result.lot_size", value: 30}
+    - {type: json_path_type, path: "result.basis", value: number}
+    - {type: json_path_type, path: "result.days_to_expiry", value: number}
+    - {type: latency_max_ms, value: 20000}
+
+- id: BLUE-MCP-004
+  title: get_fx_rate resolves to market_data and echoes the requested currency pair
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, market_data, fx]
+  input:
+    tool: get_fx_rate
+    arguments: {base: USD, quote: INR}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_equals, path: "result.base", value: USD}
+    - {type: json_path_equals, path: "result.quote", value: INR}
+    - {type: json_path_type, path: "result.rate", value: number}
+    - {type: provenance_in, any_of: [live, snapshot, synthetic]}
+
+- id: BLUE-MCP-005
+  title: get_contract_spec resolves to market_data and returns the RELIANCE contract master
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, market_data, contract_spec]
+  input:
+    tool: get_contract_spec
+    arguments: {symbol: RELIANCE}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_equals, path: "result.lot_size", value: 500}
+    - {type: json_path_equals, path: "result.tick", value: 0.05}
+    - {type: json_path_equals, path: "result.segment", value: stock}
+
+- id: BLUE-MCP-006
+  title: price_option resolves to the risk server and returns a Black-Scholes value
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, risk, pricing]
+  input:
+    tool: price_option
+    arguments: {symbol: NIFTY, strike: 25000, option_type: call, spot: 25000, volatility: 0.15}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_equals, path: "result.moneyness", value: ATM}
+    - {type: json_path_type, path: "result.price", value: number}
+    - {type: json_path_between, path: "result.delta", min: 0.0, max: 1.0}
+
+- id: BLUE-MCP-007
+  title: calc_greeks resolves to the risk server and scales Greeks by lot size
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, risk, greeks]
+  input:
+    tool: calc_greeks
+    arguments: {symbol: NIFTY, strike: 25000, option_type: put, spot: 25000, volatility: 0.15, lots: 2}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_equals, path: "result.quantity", value: 150}
+    - {type: json_path_type, path: "result.position_greeks", value: object}
+    - {type: json_path_between, path: "result.delta", min: -1.0, max: 0.0}
+
+- id: BLUE-MCP-008
+  title: implied_volatility resolves to the risk server and reports convergence
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, risk, iv]
+  input:
+    tool: implied_volatility
+    arguments: {symbol: NIFTY, strike: 25000, market_price: 250, option_type: call, spot: 25000}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_equals, path: "result.converged", value: true}
+    - {type: json_path_type, path: "result.implied_vol", value: number}
+    - {type: json_path_between, path: "result.implied_vol", min: 0.0, max: 5.0}
+
+- id: BLUE-MCP-009
+  title: calc_margin resolves to the risk server and keeps its indicative disclaimer
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, risk, margin]
+  input:
+    tool: calc_margin
+    arguments: {symbol: NIFTY, position: futures_long, lots: 1, spot: 25000}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_equals, path: "result.lot_size", value: 75}
+    - {type: json_path_equals, path: "result.contract_value", value: 1875000}
+    - {type: json_path_type, path: "result.total_margin", value: number}
+    - {type: json_path_exists, path: "result.disclaimer"}
+
+- id: BLUE-MCP-010
+  title: payoff_profile resolves to the risk server and returns breakevens for a straddle
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, risk, payoff]
+  input:
+    tool: payoff_profile
+    arguments: {symbol: NIFTY, strategy: long_straddle, spot: 25000, volatility: 0.15}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_equals, path: "result.strategy", value: long_straddle}
+    - {type: json_path_equals, path: "result.position_type", value: debit}
+    - {type: json_path_type, path: "result.breakevens", value: array}
+    - {type: json_path_exists, path: "result.disclaimer"}
+
+- id: BLUE-MCP-011
+  title: search_knowledge_base resolves to the research server and returns cited passages
+  category: mcp_routing
+  severity: high
+  target: mcp
+  tags: [routing, research, corpus]
+  input:
+    tool: search_knowledge_base
+    arguments: {query: "what is put-call parity", top_k: 3}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: research}
+    - {type: json_path_length_min, path: "result.results", value: 1}
+    - {type: json_path_type, path: "result.results[0].doc_id", value: string}
+    - {type: json_path_type, path: "result.result_count", value: number}
+
+- id: BLUE-MCP-012
+  title: corpus_stats resolves to the research server and reports an intact index
+  category: mcp_routing
+  severity: medium
+  target: mcp
+  tags: [routing, research, corpus_stats]
+  input:
+    tool: corpus_stats
+    arguments: {}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: research}
+    - {type: json_path_equals, path: "result.documents", value: 15}
+    - {type: json_path_type, path: "result.chunks", value: number}
+    - {type: json_path_type, path: "result.vocabulary", value: number}
+
+# ---------------------------------------------------------------------------
+# MCP — tool contracts and protocol behaviour
+# ---------------------------------------------------------------------------
+- id: BLUE-MCP-013
+  title: A missing required argument returns an in-band missing_argument error, not a transport failure
+  category: mcp_contract
+  severity: high
+  target: mcp
+  tags: [contract, validation]
+  input:
+    tool: get_quote
+    arguments: {}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: missing_argument}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_equals, path: "transport", value: in_process}
+
+- id: BLUE-MCP-014
+  title: A wrongly typed symbol returns type_error and still routes to the owning server
+  category: mcp_contract
+  severity: high
+  target: mcp
+  tags: [contract, validation]
+  input:
+    tool: get_quote
+    arguments: {symbol: 123}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: type_error}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_exists, path: "error.message"}
+
+- id: BLUE-MCP-015
+  title: A negative strike is rejected as out_of_range by the risk server
+  category: mcp_contract
+  severity: high
+  target: mcp
+  tags: [contract, validation, risk]
+  input:
+    tool: price_option
+    arguments: {symbol: NIFTY, strike: -5, spot: 25000}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: out_of_range}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-MCP-016
+  title: A malformed currency code is rejected as invalid_argument
+  category: mcp_contract
+  severity: medium
+  target: mcp
+  tags: [contract, validation, fx]
+  input:
+    tool: get_fx_rate
+    arguments: {base: US, quote: INR}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: invalid_argument}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_type, path: "error.message", value: string}
+
+- id: BLUE-MCP-017
+  title: A symbol outside the F&O contract master is rejected as unknown_symbol
+  category: mcp_contract
+  severity: high
+  target: mcp
+  tags: [contract, validation, margin]
+  input:
+    tool: calc_margin
+    arguments: {symbol: GOOG, position: futures_long, spot: 100}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: unknown_symbol}
+    - {type: json_path_equals, path: "server", value: risk}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-MCP-018
+  title: An oversized top_k on the research server is rejected as out_of_range
+  category: mcp_contract
+  severity: medium
+  target: mcp
+  tags: [contract, validation, research]
+  input:
+    tool: search_knowledge_base
+    arguments: {query: "margin requirements", top_k: 99}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: out_of_range}
+    - {type: json_path_equals, path: "server", value: research}
+    - {type: json_path_equals, path: "transport", value: in_process}
+
+- id: BLUE-MCP-019
+  title: A tool no server exposes returns tool_not_found with no server bound
+  category: mcp_protocol
+  severity: high
+  target: mcp
+  tags: [protocol, routing]
+  input:
+    tool: delete_all_positions
+    arguments: {confirm: true}
+  checks:
+    - {type: tool_ok, value: false}
+    - {type: error_code, value: tool_not_found}
+    - {type: json_path_equals, path: "server", value: "<none>"}
+    - {type: json_path_type, path: "result", value: "null"}
+
+- id: BLUE-MCP-020
+  title: Market-data results carry a provenance block naming source, provider and staleness
+  category: mcp_protocol
+  severity: high
+  target: mcp
+  tags: [protocol, provenance, market_data]
+  input:
+    tool: get_quote
+    arguments: {symbol: RELIANCE}
+  checks:
+    - {type: tool_ok, value: true}
+    - {type: json_path_equals, path: "server", value: market_data}
+    - {type: json_path_exists, path: "result._provenance"}
+    - {type: json_path_in, path: "result._provenance.source", any_of: [live, snapshot, synthetic]}
+    - {type: json_path_type, path: "result._provenance.provider", value: string}
+    - {type: json_path_type, path: "result._provenance.stale", value: boolean}
+    - {type: json_path_equals, path: "result.lot_size", value: 500}
+
+# ---------------------------------------------------------------------------
+# Multi-agent — decomposition
+# ---------------------------------------------------------------------------
+- id: BLUE-MULTI-001
+  title: A compound data-plus-risk question splits into 2+ subtasks across 2+ specialists
+  category: multi_agent_decomposition
+  severity: high
+  target: multi
+  tags: [decomposition, supervisor]
+  input:
+    query: "What is the option chain for NIFTY and also what is the margin for one lot of NIFTY futures?"
+  checks:
+    - {type: not_refused}
+    - {type: subtask_count_min, value: 2}
+    - {type: agent_count_min, value: 2}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-002
+  title: A data-plus-concept question reaches both the market_data and research servers
+  category: multi_agent_decomposition
+  severity: high
+  target: multi
+  tags: [decomposition, supervisor]
+  input:
+    query: "Get the NIFTY spot price. Also explain what physical settlement means."
+  checks:
+    - {type: not_refused}
+    - {type: subtask_count_min, value: 2}
+    - {type: agent_count_min, value: 2}
+    - {type: agent_used, any_of: [market_data_analyst]}
+    - {type: agent_used, any_of: [research_analyst]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-003
+  title: A simple conceptual question produces exactly one specialist
+  category: multi_agent_decomposition
+  severity: high
+  target: multi
+  tags: [decomposition, single_specialist]
+  input:
+    query: "What is put-call parity?"
+  checks:
+    - {type: not_refused}
+    - {type: subtask_count_min, value: 1}
+    - {type: agent_used, any_of: [research_analyst]}
+    - {type: agent_count_min, value: 1}
+    - {type: tool_count_max, value: 1}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-004
+  title: A simple margin question produces exactly one specialist and one MCP call
+  category: multi_agent_decomposition
+  severity: high
+  target: multi
+  tags: [decomposition, single_specialist]
+  input:
+    query: "Calculate the margin for 2 lots of BANKNIFTY futures"
+  checks:
+    - {type: not_refused}
+    - {type: subtask_count_min, value: 1}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: tool_count_max, value: 1}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-005
+  title: A three-part request is decomposed into at least three subtasks
+  category: multi_agent_decomposition
+  severity: medium
+  target: multi
+  tags: [decomposition, supervisor]
+  input:
+    query: "Price a NIFTY 25000 call. Also get the NIFTY option chain. Also explain what open interest means."
+  checks:
+    - {type: not_refused}
+    - {type: subtask_count_min, value: 3}
+    - {type: all_tool_calls_ok}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: latency_max_ms, value: 60000}
+
+# ---------------------------------------------------------------------------
+# Multi-agent — routing correctness
+# ---------------------------------------------------------------------------
+- id: BLUE-MULTI-006
+  title: A fair-value pricing request routes to the risk_analyst
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, risk]
+  input:
+    query: "Price the fair value of a NIFTY 25000 call option"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: tool_used, any_of: [price_option, calc_greeks]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-007
+  title: A margin request routes to the risk_analyst and keeps the indicative disclaimer
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, risk, margin]
+  input:
+    query: "Calculate the margin for one lot of NIFTY futures"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: disclaimer_present}
+    - {type: no_advice}
+
+- id: BLUE-MULTI-008
+  title: A Greeks question routes to the risk_analyst, not to market data
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, risk, greeks]
+  input:
+    query: "What is the delta of a NIFTY 25000 call?"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: tool_used, any_of: [calc_greeks, price_option]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-009
+  title: A payoff and breakeven question routes to the risk_analyst
+  category: multi_agent_routing
+  severity: medium
+  target: multi
+  tags: [routing, risk, payoff]
+  input:
+    query: "Show me the max profit and breakeven of a long straddle"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: tool_used, any_of: [payoff_profile]}
+    - {type: no_advice}
+
+- id: BLUE-MULTI-010
+  title: A live quote request routes to the market_data_analyst
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, market_data]
+  input:
+    query: "What is the LTP quote for RELIANCE?"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [market_data_analyst]}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: tool_used, any_of: [get_quote]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-011
+  title: An option chain and open interest request routes to the market_data_analyst
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, market_data, option_chain]
+  input:
+    query: "Show the NIFTY option chain open interest"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [market_data_analyst]}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: tool_used, any_of: [get_option_chain]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-MULTI-012
+  title: An FX request routes to the market_data_analyst and reaches the FX tool
+  category: multi_agent_routing
+  severity: medium
+  target: multi
+  tags: [routing, market_data, fx]
+  input:
+    query: "Give me the USD INR fx rate"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [market_data_analyst]}
+    - {type: tool_used, any_of: [get_fx_rate]}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-013
+  title: A contract specification lookup routes to the market_data_analyst
+  category: multi_agent_routing
+  severity: medium
+  target: multi
+  tags: [routing, market_data, contract_spec]
+  input:
+    query: "Look up the contract spec for BANKNIFTY"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [market_data_analyst]}
+    - {type: tool_used, any_of: [get_contract_spec]}
+    - {type: all_tool_calls_ok}
+    - {type: contains_any, values: ["lot_size"]}
+
+- id: BLUE-MULTI-014
+  title: A settlement procedure question routes to the research_analyst
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, research, settlement]
+  input:
+    query: "Explain the settlement procedure for index options"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [research_analyst]}
+    - {type: mcp_server_used, any_of: [research]}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-015
+  title: A tax and regulation question routes to the research_analyst
+  category: multi_agent_routing
+  severity: high
+  target: multi
+  tags: [routing, research, tax]
+  input:
+    query: "How does STT tax work on options?"
+  checks:
+    - {type: not_refused}
+    - {type: agent_used, any_of: [research_analyst]}
+    - {type: mcp_server_used, any_of: [research]}
+    - {type: tool_used, any_of: [search_knowledge_base]}
+    - {type: no_advice}
+
+# ---------------------------------------------------------------------------
+# Multi-agent — cross-agent tool boundary
+# ---------------------------------------------------------------------------
+- id: BLUE-MULTI-016
+  title: A risk-only request never reaches another specialist's MCP server
+  category: multi_agent_boundary
+  severity: critical
+  target: multi
+  tags: [boundary, privilege]
+  input:
+    query: "Calculate the margin for 2 lots of BANKNIFTY futures"
+  checks:
+    - {type: no_cross_agent_access}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: mcp_server_used, any_of: [risk]}
+    - {type: all_tool_calls_ok}
+
+- id: BLUE-MULTI-017
+  title: A research-only request stays inside the research server
+  category: multi_agent_boundary
+  severity: critical
+  target: multi
+  tags: [boundary, privilege, research]
+  input:
+    query: "Explain SEBI position limits regulation"
+  checks:
+    - {type: no_cross_agent_access}
+    - {type: agent_used, any_of: [research_analyst]}
+    - {type: mcp_server_used, any_of: [research]}
+    - {type: tool_not_used, any_of: [calc_margin, price_option, get_quote]}
+
+- id: BLUE-MULTI-018
+  title: A mixed request keeps each specialist inside its own tool surface
+  category: multi_agent_boundary
+  severity: critical
+  target: multi
+  tags: [boundary, privilege, mixed]
+  input:
+    query: "Explain SEBI regulation on position limits. Also get the USD INR fx rate."
+  checks:
+    - {type: no_cross_agent_access}
+    - {type: agent_count_min, value: 2}
+    - {type: mcp_server_used, any_of: [research]}
+    - {type: mcp_server_used, any_of: [market_data]}
+    - {type: all_tool_calls_ok}
+    - {type: latency_max_ms, value: 45000}
+
+# ---------------------------------------------------------------------------
+# Multi-agent — synthesis quality
+# ---------------------------------------------------------------------------
+- id: BLUE-MULTI-019
+  title: The synthesised answer carries findings from more than one specialist
+  category: multi_agent_synthesis
+  severity: high
+  target: multi
+  tags: [synthesis, coverage]
+  input:
+    query: "Get the NIFTY spot price. Also explain what physical settlement means."
+  checks:
+    - {type: not_refused}
+    - {type: agent_count_min, value: 2}
+    - {type: contains_all, values: ["get_quote", "search_knowledge_base"]}
+    - {type: min_length, value: 200}
+    - {type: no_advice}
+    - {type: latency_max_ms, value: 45000}
+
+- id: BLUE-MULTI-020
+  title: A failed subtask is surfaced in the final answer rather than silently dropped
+  category: multi_agent_synthesis
+  severity: critical
+  target: multi
+  tags: [synthesis, failure_transparency]
+  input:
+    query: "Show me the max profit and breakeven of a long straddle"
+  checks:
+    - {type: not_refused}
+    - {type: contains_any, values: ["Not everything completed"]}
+    - {type: agent_used, any_of: [risk_analyst]}
+    - {type: disclaimer_present}
+    - {type: no_advice}
+    - {type: no_cross_agent_access}

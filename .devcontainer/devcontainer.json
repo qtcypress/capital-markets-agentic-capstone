@@ -1,0 +1,17 @@
+{
+  "name": "Capital Markets Agentic Capstone",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "pip install -r requirements.txt && python -m playwright install --with-deps chromium",
+  "forwardPorts": [8000],
+  "portsAttributes": { "8000": { "label": "Capstone console", "onAutoForward": "openPreview" } },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "redhat.vscode-yaml"],
+      "settings": { "python.testing.pytestEnabled": true }
+    }
+  },
+  "remoteEnv": {
+    "QTCAP_LLM_PROVIDER": "stub",
+    "QTCAP_MARKET_MODE": "auto"
+  }
+}
