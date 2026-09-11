@@ -3,8 +3,8 @@
 A complete, runnable training project that takes a **manual tester with capital-markets
 domain knowledge** and turns them into a **tester of RAG and agentic AI systems**.
 
-Three applications, one live market-data layer, one knowledge corpus, and **455 tests, plus a 317-case IEEE 829 workbook**
-— 206 blue-team, 121 red-team, 37 UI, 37 hosting-security, 30 document-corpus, 28 IEEE harness — all
+Three applications, one live market-data layer, one knowledge corpus, and **499 tests, plus a 377-case IEEE 829 workbook**
+— 206 blue-team, 121 red-team, 45 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 30 test-lab — all
 green. The IEEE workbook is separate, and deliberately is not.
 
 ```
@@ -141,11 +141,12 @@ python tools/fetch_live_data.py --check  # connectivity check only
 | Red — injection & jailbreak | 47 | instruction override, persona attacks, prompt extraction, privilege escalation, obfuscation |
 | Red — leakage & tool abuse | 41 | PII redaction, credential exfiltration, path traversal, SSRF, SQL, resource exhaustion, context poisoning |
 | Red — financial harm | 33 | investment advice, guaranteed returns, market-abuse facilitation, hallucination, numerical integrity |
-| UI (Playwright) | 37 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
+| UI (Playwright) | 45 | every panel, trace rendering, refusal display, validation errors, per-request guardrail switch, key handling, runner, findings |
 | Hosting security (pytest) | 37 | key redaction, SSRF allowlist, per-request isolation, rate limiting, findings redaction, custom-domain host policy, per-browser document isolation |
 | Documents (pytest) | 30 | corpus isolation, provenance labelling, poisoned-document detection, format handling, upload limits |
-| IEEE harness (pytest) | 28 | every workbook row bound, oracles independent of the app, RAGAS proxies directional |
-| IEEE 829 workbook | 317 | the full manual suite, executed and written back into the spreadsheet — see below |
+| Test lab (pytest) | 30 | session forgery, per-user isolation, defect publishing, no key ever stored |
+| IEEE harness (pytest) | 30 | every workbook row bound, oracles independent of the app, RAGAS proxies directional |
+| IEEE 829 workbook | 377 | the full manual suite, executed and written back into the spreadsheet — see below |
 
 ```bash
 ./test.sh fast       # YAML runner, plain output, fastest
@@ -227,33 +228,71 @@ retrieves should be a deployment, not a click.
 | [Test case spec](docs/test-case-spec.md) | Complete YAML format and check vocabulary |
 | [Facilitator guide](docs/03-facilitator-guide.md) | Running this as a five-day course |
 | [Deployment](docs/04-deployment.md) | Free hosting, bring-your-own-key, and what changes on a shared instance |
-| [IEEE 829 suite](docs/05-ieee-suite.md) | Executing the 317-case workbook and reading its failures |
+| [IEEE 829 suite](docs/05-ieee-suite.md) | Executing the 377-case workbook and reading its failures |
+| [Test Lab](docs/06-test-lab.md) | Google sign-in, the three dashboards, defects and the shared board |
+
+## The Test Lab
+
+The whole 377-case suite is published **inside the console**. A trainee signs in
+with Google, runs cases against the three applications, marks their own verdict,
+raises defects and publishes the ones worth sharing to a board the class can
+read.
+
+- **Three dashboards** — RAG, single agent, multi-agent — each showing what that
+  trainee has executed, split pass / fail / capability gap / blocked.
+- **Results are private** to the account that produced them. Defects start
+  private and are published deliberately; the public board carries the author's
+  name and never their email address.
+- **The model key stays in the browser.** Signing in says whose results these
+  are; it does not give the server custody of anybody's credentials. There is a
+  test asserting no key reaches storage.
+- **A tester may overrule the harness.** The automated status and the tester's
+  verdict are separate fields, because an automated check is evidence and a
+  verdict is a judgement.
+- **Summary report** as markdown, including the list facilitators should read
+  first: failing cases with no defect raised against them.
+
+Sign-in needs one public Google client id and no client secret — see
+[docs/06-test-lab.md](docs/06-test-lab.md). Without one, a local-only sign-in
+keeps the lab usable offline, and it is refused outright when
+`QTCAP_PUBLIC_MODE=1`.
+
+> On a free hosting tier the SQLite file is ephemeral: a redeploy takes everyone's
+> results with it. Point `QTCAP_DB_PATH` at a persistent disk, or tell the class
+> to download their report before they leave.
 
 ## The IEEE 829 workbook
 
-`tests/ieee/Capital_Markets_GenAI_Agent_Test_Suite_IEEE.xlsx` holds 317 manual
-test cases in IEEE 829 form — 179 for a GenAI copilot, 138 for a trading agent,
-across 30 requirement areas from RAGAS metrics to human-in-the-loop approval
-gates. Every row is executable:
+`tests/ieee/Capital_Markets_GenAI_Agent_Test_Suite_IEEE.xlsx` holds 377 manual
+test cases in IEEE 829 form — 209 for a GenAI copilot, 168 for a trading agent,
+across 32 requirement areas from RAGAS metrics to human-in-the-loop approval
+gates and derivatives trading guardrails. Every row is executable:
 
 ```bash
-python tools/run_ieee_suite.py                    # all 317, about a minute
+python tools/run_ieee_suite.py                    # all 377, about a minute
 python tools/run_ieee_suite.py --category G06     # one category
 python tools/run_ieee_suite.py --id TC_G_G04_046  # one case
 ```
 
 The run writes **Status**, **Actual Result**, **Defects** and **Remarks** back
-into every row of a copy of the sheet, and adds an Execution Summary and a
-Defect Register.
+into every row of a copy of the sheet, and adds four sheets: an **Execution
+Summary**, a **Defect Register**, and a **RAG Applicable** / **Agent
+Applicable** pair that re-cut every case by which application it actually
+exercises — the view a tester handed one pipeline needs, which the workbook's
+requirement-area layout does not give them.
 
 **It does not all pass, on purpose.** A representative run:
 
 | Verdict | Cases | |
 |---|---|---|
-| Pass | 177 | the expected result was observed |
-| Fail | 62 | a real defect, with the evidence attached |
-| Fail (expected) | 71 | a requirement this system has no implementation for |
+| Pass | 219 | the expected result was observed |
+| Fail | 66 | a real defect, with the evidence attached |
+| Fail (expected) | 85 | a requirement this system has no implementation for |
 | Blocked | 7 | a live market feed was unreachable — not a pass |
+
+Split by application: **RAG 210 cases, 71% pass**; **Agent 199 cases, 46% pass**.
+The gap between those two numbers is the finding — the retrieval pipeline is
+largely built, the agent's operational half largely is not.
 
 Eighteen distinct defects sit behind those failures, each named in the Defect
 Register with the cases that prove it. The financial answer key

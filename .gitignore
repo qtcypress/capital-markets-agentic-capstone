@@ -6,3 +6,7 @@ reports/*.json
 reports/*.html
 data/snapshots/*.json
 .venv/
+
+# The test lab's database is runtime state, not source.
+data/lab.sqlite3*
+reports/

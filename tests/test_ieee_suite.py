@@ -52,9 +52,9 @@ def case_ids() -> list[str]:
 # ---------------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------------
-def test_the_workbook_still_holds_317_cases(case_ids):
-    assert len(case_ids) == 317
-    assert len(set(case_ids)) == 317, "duplicate Test Case IDs"
+def test_the_workbook_still_holds_377_cases(case_ids):
+    assert len(case_ids) == 377
+    assert len(set(case_ids)) == 377, "duplicate Test Case IDs"
 
 
 def test_every_workbook_row_has_an_execution_binding(case_ids, bindings):
@@ -79,9 +79,9 @@ def test_every_capability_verdict_is_one_of_the_three(bindings):
 
 
 def test_the_suite_still_covers_every_requirement_area(bindings):
-    """30 requirement areas, G01-G15 and A01-A15. Losing one silently is the risk."""
+    """32 requirement areas, G01-G16 and A01-A16. Losing one silently is the risk."""
     areas = {cid.split("_")[2] for cid in bindings}
-    expected = {f"G{i:02d}" for i in range(1, 16)} | {f"A{i:02d}" for i in range(1, 16)}
+    expected = {f"G{i:02d}" for i in range(1, 17)} | {f"A{i:02d}" for i in range(1, 17)}
     assert areas == expected, f"missing: {sorted(expected - areas)}"
 
 
@@ -94,9 +94,9 @@ def test_the_capability_profile_has_not_silently_drifted(bindings):
     from collections import Counter
 
     counts = Counter(b["capability"] for b in bindings.values())
-    assert counts["implemented"] == pytest.approx(184, abs=12)
-    assert counts["absent"] == pytest.approx(85, abs=12)
-    assert sum(counts.values()) == 317
+    assert counts["implemented"] == pytest.approx(219, abs=14)
+    assert counts["absent"] == pytest.approx(99, abs=14)
+    assert sum(counts.values()) == 377
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +115,8 @@ def test_the_capability_profile_has_not_silently_drifted(bindings):
     "TC_A_A04_035",   # tool_contract
     "TC_A_A08_071",   # multi_agent
     "TC_A_A09_079",   # trace_audit
+    "TC_G_G16_183",   # derivatives query correctness — the system's home ground
+    "TC_A_A16_139",   # derivatives trading guardrail
 ])
 def test_a_representative_case_from_each_executor_returns_a_verdict(case_id, bindings):
     outcome = EXECUTORS[bindings[case_id]["executor"]](dict(bindings[case_id]))

@@ -36,6 +36,8 @@
   <button class="tab" role="tab" data-panel="market" data-testid="tab-market">Market Data</button>
   <button class="tab" role="tab" data-panel="runner" data-testid="tab-runner">Test Runner</button>
   <button class="tab" role="tab" data-panel="issues" data-testid="tab-issues">Findings</button>
+  <button class="tab" role="tab" data-panel="lab"    data-testid="tab-lab">Test Lab</button>
+  <button class="tab" role="tab" data-panel="board"  data-testid="tab-board">Defect Board</button>
   <button class="tab" role="tab" data-panel="admin"  data-testid="tab-admin">Test Controls</button>
 </nav>
 
@@ -251,6 +253,76 @@
     </div>
   </section>
 
+
+  <!-- ============ TEST LAB ============ -->
+  <section class="panel" id="panel-lab" role="tabpanel">
+    <div class="lab-head">
+      <div>
+        <h2>Test Lab</h2>
+        <p class="hint">The published IEEE 829 suite, executable here. Sign in so your results and
+          defects are yours — <strong>your model key never leaves your browser</strong> and is
+          never stored on this server.</p>
+      </div>
+      <div class="signin" id="signinBox" data-testid="signin-box" data-state="signed-out">
+        <div id="signedOut">
+          <div id="googleBtn" data-testid="google-btn"></div>
+          <div id="localSignin" hidden>
+            <label>Offline sign-in (local runs only)
+              <input id="localName" data-testid="local-name" placeholder="your name" maxlength="40">
+            </label>
+            <button class="primary" id="localGo" data-testid="local-go">Sign in</button>
+          </div>
+          <p class="hint" id="signinHint"></p>
+        </div>
+        <div id="signedIn" hidden>
+          <span class="who" data-testid="who"><span id="whoName"></span>
+            <span class="who-mail" id="whoMail"></span></span>
+          <button class="ghost" id="signOut" data-testid="sign-out">Sign out</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="dash" id="labDash" data-testid="lab-dash"></div>
+
+    <div class="lab-controls">
+      <div class="suitetabs" role="tablist">
+        <button class="suitetab active" data-suite="rag"   data-testid="suite-rag">RAG Assistant</button>
+        <button class="suitetab" data-suite="agent" data-testid="suite-agent">Single Agent</button>
+        <button class="suitetab" data-suite="multi" data-testid="suite-multi">Multi-Agent</button>
+      </div>
+      <label>Area <select id="labArea" data-testid="lab-area"><option value="">all</option></select></label>
+      <label>Show <select id="labFilter" data-testid="lab-filter">
+        <option value="">everything</option>
+        <option value="notrun">not run yet</option>
+        <option value="Fail">failing</option>
+        <option value="Fail (expected)">capability gaps</option>
+        <option value="Pass">passing</option>
+      </select></label>
+      <input id="labSearch" data-testid="lab-search" placeholder="search id, objective or input…">
+      <button class="primary" id="runSelected" data-testid="run-selected">Run selected</button>
+      <a class="ghost" id="downloadReport" data-testid="download-report" href="/api/lab/report">Download report</a>
+    </div>
+
+    <div class="caselist" id="caseList" data-testid="case-list" data-state="idle"></div>
+  </section>
+
+  <!-- ============ DEFECT BOARD ============ -->
+  <section class="panel" id="panel-board" role="tabpanel">
+    <div class="two-col">
+      <div class="col">
+        <h2>My defects</h2>
+        <p class="hint">Private until you publish. Publishing puts a defect on the shared board
+          below, with your name but not your email address.</p>
+        <div id="myDefects" data-testid="my-defects" data-state="idle"></div>
+      </div>
+      <div class="col">
+        <h2>Published board</h2>
+        <p class="hint">Everything the class has published. Readable by anyone, signed in or not.</p>
+        <div id="publicDefects" data-testid="public-defects"></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ ADMIN ============ -->
   <section class="panel" id="panel-admin" role="tabpanel">
     <h2>Test Controls</h2>
@@ -304,6 +376,34 @@
 <footer>
   <span>Quality Thought — training application. All market figures are educational, not investment advice.</span>
 </footer>
+<div class="modal-bg" id="defectModal" data-testid="defect-modal" hidden>
+  <div class="modal">
+    <h3 id="defectHeading">Raise a defect</h3>
+    <p class="hint" id="defectCase"></p>
+    <label>Title <input id="dTitle" data-testid="d-title" maxlength="200"></label>
+    <div class="controls">
+      <label>Severity <select id="dSeverity" data-testid="d-severity">
+        <option value="critical">critical</option><option value="high">high</option>
+        <option value="medium" selected>medium</option><option value="low">low</option>
+      </select></label>
+      <label>Suite <select id="dSuite" data-testid="d-suite">
+        <option value="rag">rag</option><option value="agent">agent</option>
+        <option value="multi">multi</option>
+      </select></label>
+    </div>
+    <label>Steps to reproduce <textarea id="dSteps" data-testid="d-steps" rows="3"></textarea></label>
+    <label>Expected <textarea id="dExpected" data-testid="d-expected" rows="2"></textarea></label>
+    <label>Actual <textarea id="dActual" data-testid="d-actual" rows="3"></textarea></label>
+    <div class="controls">
+      <button class="primary" id="dSave" data-testid="d-save">Save defect</button>
+      <label class="switch"><input type="checkbox" id="dPublish" data-testid="d-publish"> publish to the shared board</label>
+      <button class="ghost" id="dCancel" data-testid="d-cancel">Cancel</button>
+    </div>
+    <p class="hint" id="dStatus" data-testid="d-status"></p>
+  </div>
+</div>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="/static/app.js"></script>
+<script src="/static/lab.js"></script>
 </body>
 </html>

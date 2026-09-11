@@ -1,13 +1,13 @@
 # Executing the IEEE 829 workbook
 
-`Capital_Markets_GenAI_Agent_Test_Suite_IEEE.xlsx` holds 317 manual test cases —
-179 for a GenAI copilot, 138 for a trading agent — written in IEEE 829 form with
+`Capital_Markets_GenAI_Agent_Test_Suite_IEEE.xlsx` holds 377 manual test cases —
+209 for a GenAI copilot, 168 for a trading agent — written in IEEE 829 form with
 objectives, preconditions, steps, expected results and a traceability matrix.
 Every one of them is now executable against this project, and the run writes its
 results back into the sheet.
 
 ```bash
-python tools/run_ieee_suite.py                    # all 317, about a minute
+python tools/run_ieee_suite.py                    # all 377, about a minute
 python tools/run_ieee_suite.py --category G06     # one category
 python tools/run_ieee_suite.py --id TC_G_G04_046  # one case
 python tools/run_ieee_suite.py --fast             # skip the load and latency cases
@@ -17,8 +17,27 @@ python tools/run_ieee_suite.py --file-findings    # also file each defect in the
 The input workbook is never modified. Output lands in
 `reports/ieee/Capital_Markets_GenAI_Agent_Test_Suite_IEEE-executed.xlsx` with
 **Status**, **Actual Result**, **Defects** and **Remarks** filled in on every
-row, colour-coded, plus two new sheets: **Execution Summary** and **Defect
-Register**.
+row, colour-coded, plus four new sheets: **Execution Summary**, **Defect
+Register**, and a **RAG Applicable** / **Agent Applicable** pair.
+
+## The two Applicable sheets
+
+The workbook is organised by requirement area, which is right for traceability
+and wrong for a tester who has been handed one pipeline and asked what to run
+against it. Those two sheets re-cut every case by the application it actually
+drives — what was sent, what came back, and why it failed — sorted failures
+first:
+
+| Sheet | Cases | Pass rate |
+|---|---|---|
+| RAG Applicable | 210 | 71% |
+| Agent Applicable | 199 | 46% |
+
+A case appears on both when it exercises both: the multi-agent supervisor
+reaches the knowledge base over MCP, and the rate limiter and regression probes
+sit under everything. **The gap between 71% and 46% is itself the headline
+finding** — the retrieval half of this product is largely built and the agent's
+operational half largely is not.
 
 ## The part that matters: it does not all pass
 
@@ -82,7 +101,7 @@ release meeting.
 
 ## Working through the failures
 
-Start with the Defect Register sheet, not the case rows. Sixteen distinct
+Start with the Defect Register sheet, not the case rows. Eighteen distinct
 defects sit behind all the failures; the register names each one, its severity,
 what was observed, and every case that proves it. Ten failing cases that are all
 one missing feature are one line in a report, not ten.
@@ -143,3 +162,31 @@ executor, and the suite's pass/gap/fail profile has not drifted from the
 recorded baseline. It does **not** assert that everything passes — the day this
 project's failures all disappear is the day someone deleted the interesting
 cases.
+
+
+## The derivatives categories (G16 and A16)
+
+The sixty cases added in G16 and A16 are the only ones in the workbook aimed
+squarely at what this system is *for*. Everywhere else the sheet asks a
+derivatives assistant about mutual funds, IPOs and credit ratings; G16 asks it
+about Greeks, margin, moneyness, settlement and strategy payoffs, and A16 asks
+the agent to police position limits and eligibility.
+
+The results split exactly along the line you would predict, and that is the
+lesson:
+
+- **G16 — 26 of 30 pass.** The corpus covers this material, so the pipeline
+  performs. The four failures are all the same defect (DEF-012): asked for crude
+  oil and gold futures margins, the assistant answered with a **NIFTY** margin
+  illustration. Right shape, wrong instrument — the near-miss retrieval failure
+  a trainee reading quickly will accept without noticing.
+- **A16 — 16 pass, 14 capability gaps, no defects.** The passes are the ones
+  that reach a real calculator (margin, Greeks, payoff, rollover pricing). The
+  gaps are every row that assumes orders, positions, auto square-off or
+  settlement processing. The agent correctly says it cannot do those things
+  rather than narrating an execution that never happened, which is the single
+  most important behaviour in the category.
+
+When you write your own cases, bias them toward the system's home ground like
+G16 does. A suite made only of edge cases tells you nothing about whether the
+product works.

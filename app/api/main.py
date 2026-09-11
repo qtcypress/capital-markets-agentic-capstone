@@ -47,12 +47,12 @@ import os
 import time
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .. import issues as issue_store
+from .. import auth, issues as issue_store, lab
 from ..agents.orchestrator import Orchestrator
 from ..agents.single_agent import SingleAgent
 from ..agents.tools import REGISTRY, execute_tool
@@ -561,6 +561,288 @@ def export_issues(fmt: str = "markdown"):
                                  headers={"Content-Disposition": "attachment; filename=findings.csv"})
     return PlainTextResponse(issue_store.to_markdown(rows), media_type="text/markdown",
                              headers={"Content-Disposition": "attachment; filename=findings.md"})
+
+
+# ---------------------------------------------------------------------------
+# Test lab: sign in, run the published catalogue, keep results and defects
+# ---------------------------------------------------------------------------
+# Everything under /api/lab is scoped to the signed-in account, with one
+# deliberate exception: the published defect board, which anyone may read. A
+# model key is never part of this — it stays in the browser and arrives as a
+# header on each request, exactly as it did before sign-in existed.
+CATALOGUE_PATH = ROOT / "app" / "data" / "catalogue.json"
+_CATALOGUE: dict[str, Any] | None = None
+
+
+def _catalogue() -> dict[str, Any]:
+    global _CATALOGUE
+    if _CATALOGUE is None:
+        import json
+
+        if not CATALOGUE_PATH.exists():
+            _CATALOGUE = {"cases": [], "areas": [], "counts": {"total": 0},
+                          "error": "catalogue.json not built — run tools/export_catalogue.py"}
+        else:
+            _CATALOGUE = json.loads(CATALOGUE_PATH.read_text())
+        _CATALOGUE["by_id"] = {c["id"]: c for c in _CATALOGUE.get("cases", [])}
+    return _CATALOGUE
+
+
+def _require_user(cookie: str | None) -> auth.User:
+    user = auth.read_session(cookie)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Sign in to use the test lab.")
+    return user
+
+
+def _set_session_cookie(response: Response, user: auth.User) -> None:
+    response.set_cookie(
+        auth.COOKIE_NAME, auth.issue_session(user), max_age=auth.SESSION_TTL_S,
+        httponly=True, samesite="lax", secure=public_mode(), path="/",
+    )
+
+
+class GoogleSignIn(BaseModel):
+    credential: str = Field(..., min_length=20, max_length=4096)
+
+
+class LocalSignIn(BaseModel):
+    name: str = Field("trainee", min_length=1, max_length=40)
+
+
+class VerdictRequest(BaseModel):
+    case_id: str = Field(..., min_length=3, max_length=40)
+    verdict: str = Field(..., pattern="^(pass|fail|blocked|not_run)$")
+
+
+class DefectRequest(BaseModel):
+    title: str = Field(..., min_length=3, max_length=200)
+    severity: str = Field("medium", pattern="^(critical|high|medium|low)$")
+    suite: str = Field("rag", pattern="^(rag|agent|multi)$")
+    case_id: str | None = Field(None, max_length=40)
+    steps: str = Field("", max_length=4000)
+    expected: str = Field("", max_length=2000)
+    actual: str = Field("", max_length=4000)
+
+
+class DefectPatch(BaseModel):
+    title: str | None = Field(None, max_length=200)
+    severity: str | None = Field(None, pattern="^(critical|high|medium|low)$")
+    status: str | None = Field(None, pattern="^(open|triaged|fixed|rejected)$")
+    steps: str | None = Field(None, max_length=4000)
+    expected: str | None = Field(None, max_length=2000)
+    actual: str | None = Field(None, max_length=4000)
+
+
+class RunRequest(BaseModel):
+    case_ids: list[str] = Field(..., min_length=1, max_length=40)
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    return auth.auth_config()
+
+
+@app.post("/api/auth/google")
+def auth_google(req: GoogleSignIn, response: Response):
+    try:
+        user = auth.verify_google_token(req.credential)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    _set_session_cookie(response, user)
+    return {"user": user.public()}
+
+
+@app.post("/api/auth/local")
+def auth_local(req: LocalSignIn, response: Response):
+    """Offline sign-in. Refused outright on a public instance."""
+    try:
+        user = auth.local_user(req.name)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    _set_session_cookie(response, user)
+    return {"user": user.public()}
+
+
+@app.get("/api/auth/me")
+def auth_me(qtcap_session: str | None = Cookie(None)):
+    user = auth.read_session(qtcap_session)
+    return {"user": user.public() if user else None,
+            "config": auth.auth_config()}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/lab/catalogue")
+def lab_catalogue(suite: str | None = None, area: str | None = None,
+                  qtcap_session: str | None = Cookie(None)):
+    """The published IEEE suite. Readable signed out — running it is not."""
+    data = _catalogue()
+    cases = data.get("cases", [])
+    if suite:
+        cases = [c for c in cases if c["suite"] == suite]
+    if area:
+        cases = [c for c in cases if c["area"] == area]
+    user = auth.read_session(qtcap_session)
+    results = lab.latest_results(user.email) if user else {}
+    merged = []
+    for case in cases:
+        row = dict(case)
+        result = results.get(case["id"])
+        if result:
+            row["result"] = {"status": result["status"], "verdict": result["verdict"],
+                             "actual": result["actual"][:400], "remark": result["remark"][:400],
+                             "created_at": result["created_at"],
+                             "duration_ms": result["duration_ms"]}
+        merged.append(row)
+    return {"cases": merged, "areas": data.get("areas", []), "counts": data.get("counts", {}),
+            "signed_in": bool(user)}
+
+
+@app.post("/api/lab/run")
+def lab_run(req: RunRequest,
+            qtcap_session: str | None = Cookie(None),
+            x_llm_provider: str | None = Header(None, alias="X-LLM-Provider"),
+            x_llm_model: str | None = Header(None, alias="X-LLM-Model"),
+            x_llm_key: str | None = Header(None, alias="X-LLM-Key")):
+    """Execute up to forty published cases and store the results for this user."""
+    import time as _time
+    import uuid as _uuid
+
+    user = _require_user(qtcap_session)
+    # Touch the model headers so an invalid key fails here, with a clear message,
+    # rather than forty times inside the executors.
+    _llm_from_headers(x_llm_provider, x_llm_model, x_llm_key)
+
+    from tests.ieee.executors import EXECUTORS
+
+    catalogue = _catalogue()
+    run_id = _uuid.uuid4().hex[:12]
+    rows = []
+    for case_id in req.case_ids:
+        case = catalogue["by_id"].get(case_id)
+        if case is None:
+            rows.append({"case_id": case_id, "status": "Blocked",
+                         "remark": "No such case in the published catalogue."})
+            continue
+        if not case.get("runnable"):
+            rows.append({"case_id": case_id, "status": "Blocked",
+                         "remark": "This case spawns load and is disabled on a shared instance. "
+                                   "Run it locally with tools/run_ieee_suite.py."})
+            continue
+        executor = EXECUTORS.get(case["executor"])
+        if executor is None:
+            rows.append({"case_id": case_id, "status": "Blocked",
+                         "remark": f"No executor named {case['executor']}."})
+            continue
+        binding = _binding_for(case_id)
+        started = _time.perf_counter()
+        try:
+            outcome = executor(binding)
+        except Exception as exc:  # noqa: BLE001
+            from tests.ieee.executors import Outcome
+
+            outcome = Outcome("Fail", f"{type(exc).__name__}: {redact(str(exc))[:300]}", {},
+                              "The case raised an unhandled exception. Read it before assuming "
+                              "the harness is at fault.")
+        elapsed = (_time.perf_counter() - started) * 1000
+        stored = lab.record_result(user.email, case, outcome, elapsed, run_id)
+        rows.append({"case_id": case_id, "status": stored["status"],
+                     "actual": stored["actual"][:500], "remark": stored["remark"][:400],
+                     "duration_ms": stored["duration_ms"], "capability": case["capability"]})
+    return {"run_id": run_id, "results": rows, "summary": lab.summary(user.email)}
+
+
+_BINDINGS: dict[str, Any] | None = None
+
+
+def _binding_for(case_id: str) -> dict[str, Any]:
+    global _BINDINGS
+    if _BINDINGS is None:
+        import yaml
+
+        path = ROOT / "tests" / "ieee" / "bindings.yaml"
+        _BINDINGS = yaml.safe_load(path.read_text()) if path.exists() else {}
+    return dict(_BINDINGS.get(case_id) or {})
+
+
+@app.post("/api/lab/verdict")
+def lab_verdict(req: VerdictRequest, qtcap_session: str | None = Cookie(None)):
+    """The tester's own call. It may disagree with the harness, and that is allowed."""
+    user = _require_user(qtcap_session)
+    row = lab.set_verdict(user.email, req.case_id, req.verdict)
+    if row is None:
+        raise HTTPException(status_code=404,
+                            detail="Run the case before marking it — a verdict needs evidence.")
+    return {"case_id": req.case_id, "verdict": row["verdict"], "status": row["status"]}
+
+
+@app.get("/api/lab/summary")
+def lab_summary(qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    return {"user": user.public(), "summary": lab.summary(user.email)}
+
+
+@app.get("/api/lab/report")
+def lab_report(qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    return PlainTextResponse(
+        lab.export_markdown(user.email, user.name), media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=test-report.md"})
+
+
+@app.get("/api/lab/defects")
+def lab_my_defects(qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    return {"defects": lab.my_defects(user.email)}
+
+
+@app.post("/api/lab/defects", status_code=201)
+def lab_raise_defect(req: DefectRequest, qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    try:
+        return {"defect": lab.raise_defect(user.email, user.name, req.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/api/lab/defects/{defect_id}")
+def lab_update_defect(defect_id: str, req: DefectPatch,
+                      qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    row = lab.update_defect(user.email, defect_id, req.model_dump(exclude_none=True))
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such defect of yours.")
+    return {"defect": row}
+
+
+@app.post("/api/lab/defects/{defect_id}/publish")
+def lab_publish_defect(defect_id: str, publish: bool = True,
+                       qtcap_session: str | None = Cookie(None)):
+    """Move a defect onto the public board, or take it back off it."""
+    user = _require_user(qtcap_session)
+    row = lab.set_published(user.email, defect_id, publish)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such defect of yours.")
+    return {"defect": row}
+
+
+@app.delete("/api/lab/defects/{defect_id}")
+def lab_delete_defect(defect_id: str, qtcap_session: str | None = Cookie(None)):
+    user = _require_user(qtcap_session)
+    if not lab.delete_defect(user.email, defect_id):
+        raise HTTPException(status_code=404, detail="No such defect of yours.")
+    return {"deleted": defect_id}
+
+
+@app.get("/api/public/defects")
+def public_defect_board(limit: int = 200):
+    """The shared board: published defects only, with email addresses stripped."""
+    return {"defects": lab.public_defects(limit)}
 
 
 # ---------------------------------------------------------------------------

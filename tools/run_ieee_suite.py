@@ -63,6 +63,30 @@ FILL = {
 
 SLOW_EXECUTORS = {"latency", "concurrency"}
 
+# Which application each executor drives. The workbook is organised by
+# requirement area; a tester working on the RAG pipeline wants it organised by
+# what they can actually run against, which is what the two "Applicable" sheets
+# do. A case can legitimately touch both — the multi-agent supervisor calls the
+# knowledge base through MCP — so the mapping allows two targets.
+TARGETS = {
+    "rag_query": ("RAG",), "rag_refusal": ("RAG",), "no_fabrication": ("RAG",),
+    "ragas_metric": ("RAG",), "citation_check": ("RAG",), "persona_pair": ("RAG",),
+    "style_check": ("RAG",), "conversation": ("RAG",), "localisation": ("RAG",),
+    "robustness": ("RAG",), "latency": ("RAG",), "guardrail_block": ("RAG",),
+    "injection_block": ("RAG",), "leakage_block": ("RAG",),
+    "agent_tool": ("Agent",), "agent_tool_error": ("Agent",), "agent_plan": ("Agent",),
+    "agent_react": ("Agent",), "agent_state": ("Agent",), "approval_gate": ("Agent",),
+    "autonomy_boundary": ("Agent",), "agent_redteam": ("Agent",), "escalation": ("Agent",),
+    "e2e_scenario": ("Agent",), "trace_audit": ("Agent",), "tool_contract": ("Agent",),
+    "calculation": ("Agent",), "market_feed": ("Agent",),
+    "multi_agent": ("Agent", "RAG"), "concurrency": ("Agent", "RAG"),
+    "blue_team": ("RAG", "Agent"), "regression": ("RAG", "Agent"),
+}
+
+
+def targets_for(executor: str) -> tuple[str, ...]:
+    return TARGETS.get(executor, ("Agent",))
+
 # ---------------------------------------------------------------------------
 # Defect register: distinct causes, not one row per failing case
 # ---------------------------------------------------------------------------
@@ -378,6 +402,8 @@ def main() -> int:
 
     _write_summary(wb, counts, by_category, defect_cases, elapsed_total, len(selected))
     _write_defect_register(wb, defect_cases)
+    _write_applicable(wb, "RAG", results, bindings)
+    _write_applicable(wb, "Agent", results, bindings)
 
     out_path = Path(args.out) if args.out else REPORTS / f"{workbook_path.stem}-executed.xlsx"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,6 +467,64 @@ def _write_summary(wb, counts, by_category, defect_cases, elapsed, total) -> Non
 
     for column, width in (("A", 22), ("B", 46), ("C", 16), ("D", 18), ("E", 12), ("F", 12)):
         ws.column_dimensions[column].width = width
+
+
+def _write_applicable(wb, target: str, results, bindings) -> None:
+    """One sheet per application: every case that actually exercises it.
+
+    The workbook's own sheets split by requirement area, which is the right shape
+    for traceability and the wrong one for a tester who has been handed the RAG
+    pipeline and needs to know what to run. These two sheets answer that.
+    """
+    name = f"{target} Applicable"
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name, 2)
+    bold = Font(bold=True)
+
+    rows = [(cid, r) for cid, r in results.items()
+            if target in targets_for((bindings.get(cid) or {}).get("executor", ""))]
+    verdicts = Counter(r["status"] for _, r in rows)
+    executed = len(rows) - verdicts.get("Blocked", 0)
+
+    ws["A1"] = f"Tests applicable to the {target} application"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = (f"{len(rows)} of {len(results)} cases in the workbook exercise the "
+                f"{target.lower()} path. {verdicts.get('Pass', 0)} pass, "
+                f"{verdicts.get('Fail', 0)} fail, "
+                f"{verdicts.get('Fail (expected)', 0)} are capability gaps, "
+                f"{verdicts.get('Blocked', 0)} blocked"
+                + (f" ({verdicts.get('Pass', 0) / executed:.0%} pass rate)." if executed else "."))
+    ws["A2"].alignment = Alignment(wrap_text=True)
+    ws["A3"] = ("A case appears here when the executor it is bound to drives this application. "
+                "Cases bound to the supervisor, the rate limiter or a regression probe appear on "
+                "both sheets, because they exercise both.")
+    ws["A3"].alignment = Alignment(wrap_text=True)
+
+    ws.append([])
+    header = ["Test Case ID", "Category", "Executor", "Capability", "Status", "Defect",
+              "What was sent", "What came back", "Why"]
+    ws.append(header)
+    for cell in ws[ws.max_row]:
+        cell.font = bold
+
+    order = {"Fail": 0, "Fail (expected)": 1, "Blocked": 2, "Pass": 3}
+    for cid, record in sorted(rows, key=lambda kv: (order.get(kv[1]["status"], 9), kv[0])):
+        binding = bindings.get(cid) or {}
+        sent = binding.get("input") or binding.get("scenario") or binding.get("behaviour") \
+            or binding.get("metric") or binding.get("gate") or binding.get("mode") or ""
+        ws.append([cid, record["category"], binding.get("executor", ""), record["capability"],
+                   record["status"], record["defect"], str(sent)[:400],
+                   record["outcome"].actual[:400], record["outcome"].remark[:400]])
+        ws.cell(ws.max_row, 5).fill = FILL[record["status"]]
+
+    for column, width in (("A", 17), ("B", 10), ("C", 19), ("D", 13), ("E", 15), ("F", 10),
+                          ("G", 52), ("H", 60), ("I", 60)):
+        ws.column_dimensions[column].width = width
+    for row in ws.iter_rows(min_row=6):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.freeze_panes = "A6"
 
 
 def _write_defect_register(wb, defect_cases) -> None:

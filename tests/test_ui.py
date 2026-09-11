@@ -497,3 +497,104 @@ def test_ui37_the_brand_mark_is_present_and_loads(page):
     assert ok, "the header logo must actually render"
     status = page.evaluate("() => fetch('/favicon.svg').then(r => r.status)")
     assert status == 200
+
+
+# ---------------------------------------------------------------------------
+# Test Lab: sign in, run a published case, mark it, raise and publish a defect
+# ---------------------------------------------------------------------------
+def _sign_in(page, name="uitester"):
+    page.click('[data-testid="tab-lab"]')
+    if page.locator('[data-testid="signin-box"][data-state="signed-in"]').count():
+        return
+    page.wait_for_selector('[data-testid="local-go"]')
+    page.fill('[data-testid="local-name"]', name)
+    page.click('[data-testid="local-go"]')
+    page.wait_for_selector('[data-testid="signin-box"][data-state="signed-in"]')
+
+
+def test_ui38_the_published_catalogue_is_readable_before_signing_in(page):
+    page.click('[data-testid="tab-lab"]')
+    page.wait_for_selector('[data-testid="case-list"][data-state="loaded"]')
+    count = int(page.get_attribute('[data-testid="case-list"]', "data-count"))
+    assert count > 100, "the RAG suite should list well over a hundred published cases"
+    assert page.locator('[data-testid="signin-box"][data-state="signed-out"]').count() == 1
+
+
+def test_ui39_a_trainee_can_sign_in_and_the_dashboards_appear(page):
+    _sign_in(page)
+    page.wait_for_selector('[data-testid="dash-rag"]')
+    for suite in ("rag", "agent", "multi"):
+        assert page.locator(f'[data-testid="dash-{suite}"]').count() == 1
+    assert "uitester" in page.inner_text('[data-testid="who"]')
+
+
+def test_ui40_running_a_case_stores_a_result_against_the_dashboard(page):
+    _sign_in(page)
+    page.fill('[data-testid="lab-search"]', "TC_G_G16_183")
+    page.wait_for_selector('[data-testid="run-TC_G_G16_183"]')
+    page.click('[data-testid="run-TC_G_G16_183"]')
+    page.wait_for_selector('[data-testid="result-TC_G_G16_183"]')
+    status = page.inner_text('[data-testid="status-TC_G_G16_183"]')
+    assert status in ("Pass", "Fail", "Fail (expected)", "Blocked")
+    assert int(page.inner_text('[data-testid="dash-rag-run"]')) >= 1
+
+
+def test_ui41_a_tester_can_mark_their_own_verdict(page):
+    _sign_in(page)
+    page.fill('[data-testid="lab-search"]', "TC_G_G16_183")
+    page.wait_for_selector('[data-testid="verdict-fail-TC_G_G16_183"]')
+    page.click('[data-testid="verdict-fail-TC_G_G16_183"]')
+    page.wait_for_selector('[data-case="TC_G_G16_183"] .chip-sm.verdict')
+    assert "marked fail" in page.inner_text('[data-case="TC_G_G16_183"]')
+
+
+def test_ui42_the_three_suites_are_separate_dashboards(page):
+    _sign_in(page)
+    page.click('[data-testid="suite-agent"]')
+    page.wait_for_selector('[data-testid="case-list"][data-state="loaded"]')
+    ids = page.eval_on_selector_all('.case', "els => els.map(e => e.dataset.case)")
+    assert ids and all(i.startswith("TC_A_") or "_G0" in i or "_G1" in i for i in ids)
+    assert not page.locator('[data-case="TC_G_G09_108"]').count(), \
+        "a RAG-only case must not appear under the agent suite"
+
+
+def test_ui43_a_defect_can_be_raised_from_a_failing_case_and_published(page):
+    _sign_in(page)
+    page.fill('[data-testid="lab-search"]', "TC_G_G09_108")
+    page.wait_for_selector('[data-testid="run-TC_G_G09_108"]')
+    page.click('[data-testid="run-TC_G_G09_108"]')
+    page.wait_for_selector('[data-testid="defect-TC_G_G09_108"]')
+    page.click('[data-testid="defect-TC_G_G09_108"]')
+    page.wait_for_selector('[data-testid="defect-modal"]:not([hidden])')
+
+    page.fill('[data-testid="d-title"]', "No conversation memory between turns")
+    page.select_option('[data-testid="d-severity"]', "high")
+    page.check('[data-testid="d-publish"]')
+    page.click('[data-testid="d-save"]')
+    # A hidden element can never become "visible" — wait for the hidden state.
+    page.wait_for_selector('[data-testid="defect-modal"]', state="hidden")
+
+    page.click('[data-testid="tab-board"]')
+    page.wait_for_selector('[data-testid="my-defects"][data-state="loaded"]')
+    assert "No conversation memory" in page.inner_text('[data-testid="my-defects"]')
+    assert "published" in page.inner_text('[data-testid="my-defects"]')
+    assert "No conversation memory" in page.inner_text('[data-testid="public-defects"]')
+
+
+def test_ui44_a_published_defect_can_be_withdrawn_again(page):
+    _sign_in(page)
+    page.click('[data-testid="tab-board"]')
+    page.wait_for_selector('[data-testid="my-defects"] .defect')
+    defect_id = page.get_attribute('[data-testid="my-defects"] .defect', "data-defect")
+    page.click(f'[data-testid="publish-{defect_id}"]')
+    page.wait_for_selector(f'[data-defect="{defect_id}"][data-published="false"]')
+    assert page.locator(f'[data-testid="public-{defect_id}"]').count() == 0
+
+
+def test_ui45_the_defect_board_shows_a_name_and_never_an_email(page):
+    _sign_in(page)
+    page.click('[data-testid="tab-board"]')
+    page.click('[data-testid="tab-lab"]')
+    page.click('[data-testid="tab-board"]')
+    text = page.inner_text('[data-testid="public-defects"]')
+    assert "@local" not in text and "@gmail" not in text

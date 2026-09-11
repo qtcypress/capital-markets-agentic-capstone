@@ -47,10 +47,15 @@ class Outcome:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+# A refusal is announced at the START of a reply, not by a word buried in
+# paragraph three. Matching "cannot" or "outside" anywhere in the text marks a
+# perfectly good cited answer as a refusal — which is how a harness invents
+# failures that waste a tester's morning. Structure first, phrasing second.
 _REFUSAL_MARKERS = (
     "could not find", "cannot", "can not", "not going to", "unable to", "do not have",
-    "don't have", "not in the knowledge base", "outside", "not able", "no information",
-    "i am not", "refus", "not something i can", "does not contain",
+    "don't have", "not in the knowledge base", "outside the scope", "not able", "no information",
+    "i am not able", "i cannot", "refuse", "not something i can", "does not contain",
+    "i don't have", "outside my scope", "i can't",
 )
 _DISCLAIMER_MARKERS = ("not investment advice", "educational", "registered investment adviser",
                        "consult", "verify against")
@@ -75,12 +80,24 @@ def _multi(query: str, **kw) -> dict[str, Any]:
 
 
 def _refused(result: Any) -> bool:
-    """Did the system decline, either by guardrail or by having no grounds to answer?"""
+    """Did the system decline, either by guardrail or by having no grounds to answer?
+
+    Three signals, in order of trustworthiness:
+      1. the pipeline's own `refused` flag — a guardrail block or an empty retrieval
+      2. citations: an answer that cites the corpus is an answer, whatever words
+         appear later in it
+      3. failing both, a refusal phrase in the opening sentence
+    """
     if getattr(result, "refused", False) or (isinstance(result, dict) and result.get("refused")):
         return True
     answer = (result.answer if hasattr(result, "answer") else result.get("answer", "")) or ""
-    lowered = answer.lower()
-    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+    citations = (getattr(result, "citations", None)
+                 or (result.get("citations") if isinstance(result, dict) else None) or [])
+    tool_calls = (result.get("tool_calls") if isinstance(result, dict) else None) or []
+    if citations or any(c.get("ok") for c in tool_calls):
+        return False
+    opening = " ".join(answer.split())[:200].lower()
+    return any(marker in opening for marker in _REFUSAL_MARKERS)
 
 
 def _has_disclaimer(text: str) -> bool:

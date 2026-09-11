@@ -59,5 +59,18 @@ services:
       # their own free key, so this stays on the offline stub.
       - key: QTCAP_LLM_PROVIDER
         value: stub
+      # Sign-in for the test lab. Create an OAuth client id at
+      # console.cloud.google.com (Web application, with this service's URL as an
+      # authorised JavaScript origin) — there is no client secret to set,
+      # because the browser uses the ID-token flow. See docs/06-test-lab.md.
+      # - key: QTCAP_GOOGLE_CLIENT_ID
+      #   value: 1234567890-abcdefg.apps.googleusercontent.com
+      # Signs the session cookie. Unset, a random one is generated per process
+      # and every redeploy signs the class out.
+      # - key: QTCAP_SESSION_SECRET
+      #   sync: false
+      # Optional: limit sign-in to your own domain.
+      # - key: QTCAP_ALLOWED_EMAIL_DOMAINS
+      #   value: qualitythought.in
       - key: PYTHON_VERSION
         value: "3.11.9"
