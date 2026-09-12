@@ -83,6 +83,21 @@ def new_client(monkeypatch, name: str) -> TestClient:
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
+def test_the_session_secret_exists_from_first_boot_not_first_sign_in():
+    """Otherwise a fresh instance reports sessions as non-durable until
+    somebody happens to log in — a health field that lies for its first
+    few minutes is worse than no field."""
+    lab.ensure_schema()
+    assert lab.get_setting("session_secret")
+
+
+def test_the_seeded_secret_is_stable_across_calls():
+    lab.ensure_schema()
+    first = lab.get_setting("session_secret")
+    lab.ensure_schema()
+    assert lab.get_setting("session_secret") == first
+
+
 def test_a_session_cookie_cannot_be_forged():
     user = auth.User(email="ram@local", name="Ram", provider="local")
     cookie = auth.issue_session(user)

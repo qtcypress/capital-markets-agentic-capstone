@@ -3,8 +3,8 @@
 A complete, runnable training project that takes a **manual tester with capital-markets
 domain knowledge** and turns them into a **tester of RAG and agentic AI systems**.
 
-Three applications, one live market-data layer, one knowledge corpus, and **546 tests, plus a 377-case IEEE 829 workbook**
-— 206 blue-team, 121 red-team, 49 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 47 test-lab, 26
+Three applications, one live market-data layer, one knowledge corpus, and **548 tests, plus a 377-case IEEE 829 workbook**
+— 206 blue-team, 121 red-team, 49 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 49 test-lab, 26
 storage — all green. The IEEE workbook is separate, and deliberately is not.
 
 ```
