@@ -424,6 +424,33 @@ def test_accounts_work_on_a_public_instance_where_local_sign_in_does_not(monkeyp
         "email": "trainee@example.com", "passcode": "capstone2026"}).status_code == 201
 
 
+def test_a_short_passcode_is_told_why_in_a_sentence(monkeypatch):
+    """The bug this pins: Pydantic's min_length rejected first, so the caller got
+    a list of error objects, the console rendered it as text, and a trainee saw
+    "[object Object]" instead of the message we wrote for them."""
+    monkeypatch.setenv("QTCAP_PUBLIC_MODE", "1")
+    from app.api.main import app
+
+    response = TestClient(app).post(
+        "/api/auth/signup", json={"email": "short@example.com", "passcode": "abc123"})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, str)
+    assert "8 characters" in detail
+
+
+def test_every_validation_failure_answers_with_a_string_not_a_dump(monkeypatch):
+    """A list of objects in `detail` is what produces "[object Object]" in any
+    caller that renders it. One handler makes that impossible service-wide."""
+    from app.api.main import app
+
+    client = TestClient(app)
+    for payload in ({"email": "x"}, {"passcode": "capstone2026"}, {}):
+        body = client.post("/api/auth/signup", json=payload).json()
+        assert isinstance(body["detail"], str), payload
+        assert "object" not in body["detail"].lower()
+
+
 def test_the_account_page_carries_history_defects_and_totals(monkeypatch):
     ram = new_client(monkeypatch, "ram")
     ram.post("/api/lab/run", json={"case_ids": ["TC_G_G16_183", "TC_A_A02_011"]})

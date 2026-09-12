@@ -680,6 +680,46 @@ def test_ui48_a_wrong_passcode_says_so_and_does_not_sign_you_in(page):
     page.click('[data-testid="ac-cancel"]')
 
 
+def test_ui50_a_rejected_signup_reads_as_a_sentence_and_leaves_the_button_usable(page):
+    """Two bugs in one screen, both reported from production:
+
+    * the error read "[object Object]" — FastAPI's validation `detail` is a list
+      of objects, and textContent renders that literally;
+    * the submit button came back blank — busy() restored `data-label`, which
+      nothing sets on a button whose caption changes with the form's mode.
+
+    A trainee who cannot read the error and cannot find the button is stuck on
+    the first screen of the lab.
+    """
+    page.click('[data-testid="open-signin"]')
+    page.wait_for_selector('[data-testid="signin-modal"]:not([hidden])')
+    page.click('[data-testid="mode-signup"]')
+    page.fill('[data-testid="ac-email"]', "tooshort@example.com")
+    page.fill('[data-testid="ac-name"]', "Short")
+    page.fill('[data-testid="ac-passcode"]', "abc123")
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_function(
+        "() => (document.getElementById('acError').textContent || '').length > 0")
+
+    message = page.inner_text('[data-testid="ac-error"]')
+    assert "object" not in message.lower(), message
+    assert "8 characters" in message, message
+
+    button = page.inner_text('[data-testid="ac-go"]').strip()
+    assert button, "the submit button came back with no caption"
+    assert button.lower() == "create account", button
+    assert page.locator('[data-testid="ac-go"]').is_enabled()
+
+    # And it still works once the passcode is long enough.
+    page.fill('[data-testid="ac-passcode"]', "capstone2026")
+    page.click('[data-testid="ac-go"]')
+    page.wait_for_selector('[data-testid="signin-modal"]', state="hidden")
+    assert page.locator('[data-testid="open-account"]').is_visible()
+    page.click('[data-testid="tab-lab"]')
+    page.click('[data-testid="sign-out"]')
+    page.wait_for_selector('[data-testid="signin-box"][data-state="signed-out"]')
+
+
 def test_ui49_my_account_shows_history_and_report_links(page):
     _sign_in(page, "accountuser")
     page.fill('[data-testid="lab-search"]', "TC_G_G16_183")

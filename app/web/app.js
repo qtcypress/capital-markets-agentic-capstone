@@ -117,7 +117,31 @@ function setAnswer(el, data) {
   el.textContent = data.answer || "(no answer)";
 }
 
-function busy(btn, on) { btn.disabled = on; btn.textContent = on ? "Working…" : btn.dataset.label; }
+/* Remember the label at the moment we blank it, rather than trusting that
+   somebody set data-label at startup. A button whose caption changes with the
+   form's mode ("Sign in" / "Create account") has no single startup label, and
+   the old version restored `undefined` — an enabled button with no words on it. */
+const WORKING = "Working…";
+function busy(btn, on) {
+  if (on && btn.textContent && btn.textContent !== WORKING) btn.dataset.label = btn.textContent;
+  btn.disabled = on;
+  btn.textContent = on ? WORKING : (btn.dataset.label || "Go");
+}
+
+/* FastAPI's `detail` is a string for our own errors and a list of objects for a
+   validation failure. Rendering the second as text gives "[object Object]",
+   which is worse than useless — it hides a message the server took the trouble
+   to write. Everything that displays an error goes through here. */
+function errorText(body, status, fallback) {
+  const detail = body && (body.detail ?? body.error ?? body.message);
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((d) => (typeof d === "string" ? d : d && d.msg)).filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  if (detail && typeof detail === "object" && typeof detail.msg === "string") return detail.msg;
+  return fallback || (status ? `Request failed (HTTP ${status})` : "Something went wrong.");
+}
 
 /* ---------------- RAG ---------------- */
 $("ragSubmit").dataset.label = "Ask";
@@ -229,7 +253,7 @@ async function uploadFiles(files) {
       method: "POST",
       body: JSON.stringify({ filename: file.name, content: text }),
     });
-    if (status !== 201) problems.push(`${file.name}: ${esc(body.detail || body.message || `HTTP ${status}`)}`);
+    if (status !== 201) problems.push(`${file.name}: ${esc(errorText(body, status))}`);
   }
   await loadDocs();
   if (problems.length) docError(problems.join(" — "));
@@ -446,7 +470,7 @@ $("setVerify").addEventListener("click", async () => {
     ? [metric("backend", `${body.provider}/${body.model}`, "good"),
        metric("latency", `${body.latency_ms}ms`),
        metric("reply", (body.reply || "").slice(0, 40) || "(empty)", "good")].join("")
-    : metric("failed", body.error || body.detail || `HTTP ${status}`, "bad");
+    : metric("failed", errorText(body, status), "bad");
   loadStatus();
 });
 
@@ -484,7 +508,7 @@ $("runSubmit").addEventListener("click", async () => {
   });
   busy(btn, false);
   if (!body.summary) {
-    $("runResults").innerHTML = `<div class="run fail"><span class="err">${esc(body.detail || body.message || `HTTP ${status}`)}</span></div>`;
+    $("runResults").innerHTML = `<div class="run fail"><span class="err">${esc(errorText(body, status))}</span></div>`;
     $("runSummary").innerHTML = "";
     return;
   }
@@ -556,7 +580,7 @@ $("isSubmit").addEventListener("click", async () => {
     ["isTitle","isSteps","isExpected","isActual","isImpact"].forEach((id) => { $(id).value = ""; });
     loadIssues();
   } else {
-    $("isStatus").textContent = body.detail || body.message || `HTTP ${status}`;
+    $("isStatus").textContent = errorText(body, status);
     $("isStatus").dataset.state = "error";
   }
 });

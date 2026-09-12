@@ -48,6 +48,7 @@ import time
 from typing import Any
 
 from fastapi import Cookie, FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -615,7 +616,11 @@ class LocalSignIn(BaseModel):
 class AccountSignUp(BaseModel):
     email: str = Field(..., min_length=5, max_length=160)
     name: str = Field("", max_length=80)
-    passcode: str = Field(..., min_length=8, max_length=200)
+    # Deliberately 1, not MIN_PASSCODE. The length rule lives in lab.create_account,
+    # which raises "Choose a passcode of at least 8 characters." Enforcing it here
+    # too means Pydantic rejects first and the caller gets a validation dump instead
+    # of the sentence written for them. One rule, one owner, one message.
+    passcode: str = Field(..., min_length=1, max_length=200)
 
 
 class AccountSignIn(BaseModel):
@@ -978,6 +983,27 @@ def brand_asset(request: Request):
     if not asset.exists():
         raise HTTPException(status_code=404, detail="not found")
     return FileResponse(str(asset))
+
+
+@app.exception_handler(RequestValidationError)
+async def malformed_request(request: Request, exc: RequestValidationError):
+    """Turn FastAPI's validation dump into one sentence a person can act on.
+
+    By default `detail` is a list of objects. Any caller that renders it as text
+    — every one of ours did — shows the trainee `[object Object]`, which tells
+    them nothing except that something is broken. A string here means no endpoint
+    can produce that, present or future.
+    """
+    return JSONResponse({"detail": _readable_validation(exc.errors())}, status_code=422)
+
+
+def _readable_validation(errors: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for err in errors[:3]:
+        field = ".".join(str(p) for p in err.get("loc", ()) if p not in {"body", "query", "path"})
+        message = str(err.get("msg", "is invalid")).removeprefix("Value error, ")
+        parts.append(f"{field}: {message}" if field else message)
+    return "; ".join(parts) or "That request could not be read."
 
 
 @app.exception_handler(Exception)

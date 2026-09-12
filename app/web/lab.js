@@ -68,7 +68,7 @@ function mountGoogle() {
         method: "POST", body: JSON.stringify({ credential: response.credential }),
       });
       if (status === 200) signedInAs(body.user);
-      else el("acError").textContent = body.detail || "Sign-in failed.";
+      else el("acError").textContent = errorText(body, status, "Sign-in failed.");
     },
   });
   window.google.accounts.id.renderButton(el("googleBtn"), { theme: "outline", size: "large" });
@@ -138,8 +138,7 @@ async function submitAccount() {
   const { status, body } = await api(path, { method: "POST", body: JSON.stringify(payload) });
   busy(el("acGo"), false);
   if (status === 200 || status === 201) return signedInAs(body.user);
-  el("acError").textContent = body.detail
-    || (status === 422 ? "Check the email address and passcode." : `Sign-in failed (HTTP ${status})`);
+  el("acError").textContent = errorText(body, status, "Sign-in failed.");
 }
 el("acGo")?.addEventListener("click", submitAccount);
 ["acEmail", "acPasscode", "acName"].forEach((id) =>
@@ -150,7 +149,7 @@ el("localGo")?.addEventListener("click", async () => {
     method: "POST", body: JSON.stringify({ name: el("localName").value.trim() || "trainee" }),
   });
   if (status === 200) signedInAs(body.user);
-  else el("acError").textContent = body.detail || "Sign-in failed.";
+  else el("acError").textContent = errorText(body, status, "Sign-in failed.");
 });
 
 el("signOut")?.addEventListener("click", async () => {
@@ -413,7 +412,7 @@ async function runCases(ids, button) {
     method: "POST", body: JSON.stringify({ case_ids: ids }),
   });
   if (button) busy(button, false);
-  if (status !== 200) return alert(body.detail || `Run failed (HTTP ${status})`);
+  if (status !== 200) return alert(errorText(body, status, "Run failed."));
   renderDash(body.summary);
   await loadCatalogue();
   loadAccount();
@@ -423,7 +422,7 @@ async function markVerdict(caseId, verdict) {
   const { status, body } = await api("/api/lab/verdict", {
     method: "POST", body: JSON.stringify({ case_id: caseId, verdict }),
   });
-  if (status !== 200) return alert(body.detail || "Could not record that verdict.");
+  if (status !== 200) return alert(errorText(body, status, "Could not record that verdict."));
   await loadCatalogue();
 }
 
@@ -458,7 +457,7 @@ el("dSave")?.addEventListener("click", async () => {
   const { status, body } = await api("/api/lab/defects", {
     method: "POST", body: JSON.stringify(payload),
   });
-  if (status !== 201) { el("dStatus").textContent = body.detail || "Could not save."; return; }
+  if (status !== 201) { el("dStatus").textContent = errorText(body, status, "Could not save."); return; }
   if (el("dPublish").checked) {
     await api(`/api/lab/defects/${body.defect.id}/publish?publish=true`, { method: "POST" });
   }
