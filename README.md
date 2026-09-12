@@ -3,9 +3,9 @@
 A complete, runnable training project that takes a **manual tester with capital-markets
 domain knowledge** and turns them into a **tester of RAG and agentic AI systems**.
 
-Three applications, one live market-data layer, one knowledge corpus, and **520 tests, plus a 377-case IEEE 829 workbook**
-— 206 blue-team, 121 red-team, 49 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 47 test-lab — all
-green. The IEEE workbook is separate, and deliberately is not.
+Three applications, one live market-data layer, one knowledge corpus, and **546 tests, plus a 377-case IEEE 829 workbook**
+— 206 blue-team, 121 red-team, 49 UI, 37 hosting-security, 30 document-corpus, 30 IEEE harness, 47 test-lab, 26
+storage — all green. The IEEE workbook is separate, and deliberately is not.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -264,9 +264,14 @@ Sign-in needs one public Google client id and no client secret — see
 keeps the lab usable offline, and it is refused outright when
 `QTCAP_PUBLIC_MODE=1`.
 
-> On a free hosting tier the SQLite file is ephemeral: a redeploy takes everyone's
-> results with it. Point `QTCAP_DB_PATH` at a persistent disk, or tell the class
-> to download their report before they leave.
+Accounts, results and defects live in SQLite on a laptop and in PostgreSQL when
+`DATABASE_URL` is set — same code, same schema, both backends covered by the
+same tests.
+
+> **Set `DATABASE_URL` before a class uses the hosted instance.** A free web
+> service has no persistent disk, so without it a redeploy deletes every
+> account, result and defect. A Neon free database is permanent and needs no
+> card: [docs/07-database.md](docs/07-database.md).
 
 ## The IEEE 829 workbook
 

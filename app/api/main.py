@@ -52,7 +52,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .. import auth, issues as issue_store, lab
+from .. import auth, db as database, issues as issue_store, lab
 from ..agents.orchestrator import Orchestrator
 from ..agents.single_agent import SingleAgent
 from ..agents.tools import REGISTRY, execute_tool
@@ -221,6 +221,8 @@ def health():
         "knowledge_chunks": get_store().stats()["chunks"],
         "tools": len(REGISTRY),
         "issues_open": issue_store.stats()["open"],
+        "storage": database.describe()["backend"],
+        "storage_durable": database.describe()["persistent"],
     }
 
 
@@ -654,6 +656,12 @@ def auth_config():
     config = auth.auth_config()
     config["accounts_enabled"] = True
     config["min_passcode"] = lab.MIN_PASSCODE
+    storage = database.describe()
+    config["storage"] = storage["backend"]
+    # The UI says this out loud rather than letting a class discover it when a
+    # redeploy deletes their accounts.
+    config["durable"] = storage["persistent"]
+    config["sessions_survive_restart"] = auth.secret_is_durable()
     return config
 
 

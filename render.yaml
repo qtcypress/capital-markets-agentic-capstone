@@ -59,6 +59,12 @@ services:
       # their own free key, so this stays on the offline stub.
       - key: QTCAP_LLM_PROVIDER
         value: stub
+      # Where accounts, results and defects live. WITHOUT THIS the free instance
+      # keeps them in a SQLite file that every redeploy deletes — free services
+      # cannot attach a persistent disk. Any Postgres URL works; a Neon free
+      # database is permanent and needs no card. See docs/07-database.md.
+      - key: DATABASE_URL
+        sync: false
       # Sign-in for the test lab. Create an OAuth client id at
       # console.cloud.google.com (Web application, with this service's URL as an
       # authorised JavaScript origin) — there is no client secret to set,

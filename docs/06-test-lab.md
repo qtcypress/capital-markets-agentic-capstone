@@ -154,16 +154,28 @@ somebody's browser tab.
 
 ## Where the data lives, and when it disappears
 
-SQLite, at `QTCAP_DB_PATH` (default `data/lab.sqlite3`).
+Two backends, chosen by one environment variable:
 
-**On a free hosting tier the disk is ephemeral.** A redeploy or a spin-down
-takes the file with it, and everyone's results and defects go too. That is a
-property of the hosting rather than a bug here, and the honest response is to
-say so and give people an export button — which is what the report is for. Tell
-a class to download their report before they leave.
+- **`DATABASE_URL` unset** — SQLite at `QTCAP_DB_PATH` (default
+  `data/lab.sqlite3`). Right on a laptop. **On a free hosting tier the disk is
+  ephemeral**, so a redeploy or a spin-down takes the file and everyone's
+  accounts, results and defects with it.
+- **`DATABASE_URL` set to a Postgres URL** — everything persists across
+  redeploys, and so does the session-signing secret, so a deploy no longer signs
+  the class out.
 
-If you have a persistent disk, point `QTCAP_DB_PATH` at it and the problem goes
-away.
+Set it before a class uses the instance. A Neon free database is permanent and
+needs no card; **Render's own free Postgres expires after 30 days.** Both, plus
+the three-minute setup, are in [07-database.md](07-database.md).
+
+`GET /api/health` reports which one is live:
+
+```json
+{"storage": {"backend": "postgres", "persistent": true}, "storage_durable": true}
+```
+
+Either way, the export buttons are the retention story — tell a class to
+download their report before they leave.
 
 ## A session that works
 

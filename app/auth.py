@@ -55,18 +55,33 @@ def google_client_id() -> str:
 
 
 def _secret() -> bytes:
-    """Key for signing session cookies.
+    """Key for signing session cookies, in order of preference.
 
-    Set QTCAP_SESSION_SECRET in any deployment you expect sessions to survive a
-    restart. Unset, a random one is generated per process, which means every
-    redeploy signs everyone out — noisy, but never insecure, and better than a
-    hard-coded default that ships in a public repository.
+    1. QTCAP_SESSION_SECRET, if set. Explicit beats clever.
+    2. A secret generated once and kept in the database. This is what stops a
+       redeploy from signing a whole class out mid-session, and it only works
+       because the database outlives the container — which is the same reason
+       DATABASE_URL exists.
+    3. A per-process random secret. Correct but forgetful: sessions die with the
+       process. Better than a hard-coded default that ships in a public repo.
     """
     configured = os.environ.get("QTCAP_SESSION_SECRET", "").strip()
     if configured:
         return configured.encode()
+
     global _EPHEMERAL_SECRET
-    if _EPHEMERAL_SECRET is None:
+    if _EPHEMERAL_SECRET is not None:
+        return _EPHEMERAL_SECRET
+
+    try:
+        from . import lab
+
+        stored = lab.get_setting("session_secret")
+        if not stored:
+            stored = secrets.token_hex(32)
+            lab.set_setting("session_secret", stored)
+        _EPHEMERAL_SECRET = stored.encode()
+    except Exception:  # noqa: BLE001 — no database is not a reason to fail sign-in
         _EPHEMERAL_SECRET = secrets.token_bytes(32)
     return _EPHEMERAL_SECRET
 
@@ -205,6 +220,18 @@ def local_user(name: str) -> User:
     handle = "".join(ch for ch in (name or "trainee").lower() if ch.isalnum() or ch in "._-")[:40]
     handle = handle or "trainee"
     return User(email=f"{handle}@local", name=name[:80] or handle, provider="local")
+
+
+def secret_is_durable() -> bool:
+    """Will sessions survive a restart? Only if the secret does."""
+    if os.environ.get("QTCAP_SESSION_SECRET", "").strip():
+        return True
+    try:
+        from . import db, lab
+
+        return db.backend() == "postgres" and bool(lab.get_setting("session_secret"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def auth_config() -> dict[str, Any]:

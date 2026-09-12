@@ -6,3 +6,5 @@ pydantic>=2.6
 numpy>=1.26
 python-multipart>=0.0.9
 PyYAML>=6.0
+# Only used when DATABASE_URL points at Postgres; the SQLite path needs nothing.
+psycopg[binary]>=3.1

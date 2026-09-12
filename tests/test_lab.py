@@ -13,6 +13,7 @@ Run:
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,16 +26,36 @@ if str(ROOT) not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import auth, lab  # noqa: E402
+from app import auth, db, lab  # noqa: E402
+
+
+# The whole suite runs twice when QTCAP_TEST_POSTGRES points at a database:
+# once on SQLite and once on Postgres. Two backends that are never both tested
+# is one backend and a liability.
+POSTGRES_URL = os.environ.get("QTCAP_TEST_POSTGRES", "")
+
+
+@pytest.fixture(autouse=True, params=["sqlite", "postgres"])
+def backend(request, monkeypatch):
+    if request.param == "postgres":
+        if not POSTGRES_URL:
+            pytest.skip("set QTCAP_TEST_POSTGRES to run this suite against Postgres too")
+        monkeypatch.setenv("DATABASE_URL", POSTGRES_URL)
+    return request.param
 
 
 @pytest.fixture(autouse=True)
-def clean_db(tmp_path, monkeypatch):
+def clean_db(tmp_path, monkeypatch, backend):
     monkeypatch.setenv("QTCAP_DB_PATH", str(tmp_path / "lab.sqlite3"))
-    lab._CONN = None
+    if backend == "sqlite":
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("QTCAP_DATABASE_URL", raising=False)
+    db.reset_connection()
+    lab._READY = False
     lab.reset()
     yield
-    lab._CONN = None
+    db.reset_connection()
+    lab._READY = False
 
 
 @pytest.fixture
@@ -224,9 +245,8 @@ def test_the_server_stores_no_model_key_anywhere(monkeypatch):
     ram = new_client(monkeypatch, "ram")
     ram.post("/api/lab/run", json={"case_ids": ["TC_G_G16_183"]},
              headers={"X-LLM-Provider": "stub", "X-LLM-Key": "gsk_" + "a" * 32})
-    with lab._LOCK:
-        rows = lab._connect().execute("SELECT * FROM results").fetchall()
-    blob = " ".join(str(dict(r)) for r in rows)
+    rows = db.all_rows("SELECT * FROM results")
+    blob = " ".join(str(r) for r in rows)
     assert "gsk_" not in blob
     assert "X-LLM-Key" not in blob
 
@@ -306,12 +326,14 @@ def test_only_the_latest_run_of_a_case_counts(monkeypatch):
 # ---------------------------------------------------------------------------
 # Built-in accounts: email and passcode, for instances with no Google client id
 # ---------------------------------------------------------------------------
-def test_a_passcode_is_never_stored_in_the_clear(tmp_path):
+def test_a_passcode_is_never_stored_in_the_clear(backend):
     lab.create_account("ram@example.com", "Ram", "capstone2026")
-    raw = lab.db_path().read_bytes()
-    assert b"capstone2026" not in raw, "the database must hold a hash, never the passcode"
-    with lab._LOCK:
-        row = lab._connect().execute("SELECT * FROM accounts").fetchone()
+    if backend == "sqlite":
+        raw = lab.db_path().read_bytes()
+        assert b"capstone2026" not in raw, "the database must hold a hash, never the passcode"
+    stored = db.one("SELECT * FROM accounts WHERE email = :e", {"e": "ram@example.com"})
+    assert "capstone2026" not in str(stored)
+    row = db.one("SELECT * FROM accounts")
     assert len(row["passcode_hash"]) == 64 and row["iterations"] >= 100_000
 
 

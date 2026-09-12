@@ -13,30 +13,23 @@ Scope rules, which are the interesting part
   unpublish your own; you can never edit or unpublish somebody else's. Both are
   asserted in tests rather than promised here.
 
-Storage is SQLite through the standard library — no ORM, no new dependency, and
-a file a facilitator can copy at the end of a session.
-
-**The disk is ephemeral on a free hosting tier.** A redeploy or a spin-down
-takes the file with it. That is a property of the hosting, not a bug here, and
-the honest response is to say so in the UI and give people an export button
-rather than to pretend otherwise. Point QTCAP_DB_PATH at a persistent disk if
-you have one.
+Storage goes through `app/db.py`, which is SQLite on a laptop and PostgreSQL
+whenever `DATABASE_URL` is set. That switch is the difference between a training
+instance people can come back to and one that forgets every account on each
+redeploy — free hosting tiers cannot keep a file.
 """
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from .config import ROOT
+from . import db
 
-_LOCK = threading.Lock()
-_CONN: sqlite3.Connection | None = None
+_LOCK = threading.RLock()
 
 SEVERITIES = ("critical", "high", "medium", "low")
 VERDICTS = ("pass", "fail", "blocked", "not_run")
@@ -44,27 +37,31 @@ SUITES = ("rag", "agent", "multi")
 
 
 def db_path() -> Path:
-    return Path(os.environ.get("QTCAP_DB_PATH", str(ROOT / "data" / "lab.sqlite3")))
+    """Where SQLite would write. Meaningless when DATABASE_URL points elsewhere."""
+    return db.sqlite_path()
 
 
-def _connect() -> sqlite3.Connection:
-    global _CONN
-    if _CONN is not None:
-        return _CONN
-    path = db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    # WAL keeps a reader from blocking on the writer, which matters the moment a
-    # class of forty presses Run at the same time.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.executescript(SCHEMA)
-    _CONN = conn
-    return conn
+_READY = False
+
+
+def ensure_schema() -> None:
+    """Create the tables once per process. Safe to call from anywhere."""
+    global _READY
+    if _READY:
+        return
+    with _LOCK:
+        if _READY:
+            return
+        db.script(SCHEMA)
+        _READY = True
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
   email TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -121,13 +118,32 @@ CREATE INDEX IF NOT EXISTS idx_defects_public ON defects(published, published_at
 
 def reset() -> None:
     """Test hook: drop everything and start again."""
-    global _CONN
+    global _READY
     with _LOCK:
-        conn = _connect()
-        conn.executescript("DROP TABLE IF EXISTS results; DROP TABLE IF EXISTS defects; "
-                           "DROP TABLE IF EXISTS accounts;")
-        conn.executescript(SCHEMA)
-        conn.commit()
+        db.script("DROP TABLE IF EXISTS results; DROP TABLE IF EXISTS defects; "
+                  "DROP TABLE IF EXISTS accounts; DROP TABLE IF EXISTS settings;")
+        _READY = False
+        ensure_schema()
+
+
+# ---------------------------------------------------------------------------
+# Instance settings
+# ---------------------------------------------------------------------------
+def get_setting(key: str) -> str | None:
+    ensure_schema()
+    row = db.one("SELECT value FROM settings WHERE key = :key", {"key": key})
+    return row["value"] if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    ensure_schema()
+    with _LOCK:
+        if db.one("SELECT 1 AS x FROM settings WHERE key = :key", {"key": key}):
+            db.run("UPDATE settings SET value = :value WHERE key = :key",
+                   {"key": key, "value": value})
+        else:
+            db.run("INSERT INTO settings (key, value) VALUES (:key, :value)",
+                   {"key": key, "value": value})
 
 
 # ---------------------------------------------------------------------------
@@ -180,15 +196,14 @@ def create_account(email: str, name: str, passcode: str) -> dict[str, Any]:
            "passcode_hash": _hash_passcode(passcode, salt), "salt": salt.hex(),
            "iterations": PBKDF2_ITERATIONS, "created_at": now, "last_seen_at": now,
            "failed_attempts": 0, "locked_until": None}
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        if conn.execute("SELECT 1 FROM accounts WHERE email = ?", (email,)).fetchone():
+        if db.one("SELECT 1 AS x FROM accounts WHERE email = :email", {"email": email}):
             raise AccountError("An account already exists for that address. Sign in instead.")
-        conn.execute(
+        db.run(
             "INSERT INTO accounts (email,name,passcode_hash,salt,iterations,created_at,"
             "last_seen_at,failed_attempts,locked_until) VALUES (:email,:name,:passcode_hash,"
             ":salt,:iterations,:created_at,:last_seen_at,:failed_attempts,:locked_until)", row)
-        conn.commit()
     return {"email": email, "name": row["name"]}
 
 
@@ -197,9 +212,9 @@ def verify_account(email: str, passcode: str) -> dict[str, Any]:
     import hmac as _hmac
 
     email = _clean_email(email)
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        row = conn.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+        row = db.one("SELECT * FROM accounts WHERE email = :email", {"email": email})
         if row is None:
             # Same message either way: which addresses have accounts is not
             # something an unauthenticated caller gets to enumerate.
@@ -210,16 +225,15 @@ def verify_account(email: str, passcode: str) -> dict[str, Any]:
 
         candidate = _hash_passcode(passcode or "", bytes.fromhex(row["salt"]), row["iterations"])
         if not _hmac.compare_digest(candidate, row["passcode_hash"]):
-            failed = row["failed_attempts"] + 1
+            failed = (row["failed_attempts"] or 0) + 1
             locked = time.time() + LOCKOUT_S if failed >= MAX_FAILED else None
-            conn.execute("UPDATE accounts SET failed_attempts = ?, locked_until = ? WHERE email = ?",
-                         (failed, locked, email))
-            conn.commit()
+            db.run("UPDATE accounts SET failed_attempts = :failed, locked_until = :locked "
+                   "WHERE email = :email",
+                   {"failed": failed, "locked": locked, "email": email})
             raise AccountError("No account with that address and passcode.")
 
-        conn.execute("UPDATE accounts SET failed_attempts = 0, locked_until = NULL, "
-                     "last_seen_at = ? WHERE email = ?", (time.time(), email))
-        conn.commit()
+        db.run("UPDATE accounts SET failed_attempts = 0, locked_until = NULL, "
+               "last_seen_at = :now WHERE email = :email", {"now": time.time(), "email": email})
         return {"email": email, "name": row["name"]}
 
 
@@ -228,14 +242,14 @@ def account_exists(email: str) -> bool:
         email = _clean_email(email)
     except AccountError:
         return False
-    with _LOCK:
-        return _connect().execute(
-            "SELECT 1 FROM accounts WHERE email = ?", (email,)).fetchone() is not None
+    ensure_schema()
+    return db.one("SELECT 1 AS x FROM accounts WHERE email = :email",
+                  {"email": email}) is not None
 
 
 def account_count() -> int:
-    with _LOCK:
-        return _connect().execute("SELECT COUNT(*) AS n FROM accounts").fetchone()["n"]
+    ensure_schema()
+    return int(db.one("SELECT COUNT(*) AS n FROM accounts")["n"])
 
 
 # ---------------------------------------------------------------------------
@@ -261,27 +275,26 @@ def record_result(email: str, case: dict[str, Any], outcome: Any, duration_ms: f
         "run_id": run_id,
         "created_at": time.time(),
     }
-    with _LOCK:
-        conn = _connect()
-        conn.execute(
-            "INSERT INTO results (id,email,case_id,suite,area,executor,capability,status,verdict,"
-            "actual,evidence,remark,duration_ms,run_id,created_at) VALUES "
-            "(:id,:email,:case_id,:suite,:area,:executor,:capability,:status,:verdict,:actual,"
-            ":evidence,:remark,:duration_ms,:run_id,:created_at)", row)
-        conn.commit()
+    ensure_schema()
+    db.run(
+        "INSERT INTO results (id,email,case_id,suite,area,executor,capability,status,verdict,"
+        "actual,evidence,remark,duration_ms,run_id,created_at) VALUES "
+        "(:id,:email,:case_id,:suite,:area,:executor,:capability,:status,:verdict,:actual,"
+        ":evidence,:remark,:duration_ms,:run_id,:created_at)", row)
     return row
 
 
 def latest_results(email: str, suite: str | None = None) -> dict[str, dict[str, Any]]:
     """The most recent result per case for this user — what a dashboard shows."""
-    sql = ("SELECT * FROM results WHERE email = ? " +
-           ("AND suite = ? " if suite else "") + "ORDER BY created_at ASC")
-    args = [email] + ([suite] if suite else [])
-    with _LOCK:
-        rows = _connect().execute(sql, args).fetchall()
+    ensure_schema()
+    sql = ("SELECT * FROM results WHERE email = :email " +
+           ("AND suite = :suite " if suite else "") + "ORDER BY created_at ASC")
+    params = {"email": email}
+    if suite:
+        params["suite"] = suite
     latest: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        latest[row["case_id"]] = dict(row)      # later rows overwrite earlier ones
+    for row in db.all_rows(sql, params):
+        latest[row["case_id"]] = row            # later rows overwrite earlier ones
     return latest
 
 
@@ -290,16 +303,15 @@ def set_verdict(email: str, case_id: str, verdict: str) -> dict[str, Any] | None
     allowed to. An automated check is evidence, not a verdict."""
     if verdict not in VERDICTS:
         raise ValueError(f"verdict must be one of {VERDICTS}")
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        row = conn.execute(
-            "SELECT id FROM results WHERE email = ? AND case_id = ? ORDER BY created_at DESC "
-            "LIMIT 1", (email, case_id)).fetchone()
+        row = db.one("SELECT id FROM results WHERE email = :email AND case_id = :case_id "
+                     "ORDER BY created_at DESC LIMIT 1", {"email": email, "case_id": case_id})
         if row is None:
             return None
-        conn.execute("UPDATE results SET verdict = ? WHERE id = ?", (verdict, row["id"]))
-        conn.commit()
-        return dict(conn.execute("SELECT * FROM results WHERE id = ?", (row["id"],)).fetchone())
+        db.run("UPDATE results SET verdict = :verdict WHERE id = :id",
+               {"verdict": verdict, "id": row["id"]})
+        return db.one("SELECT * FROM results WHERE id = :id", {"id": row["id"]})
 
 
 def summary(email: str) -> dict[str, Any]:
@@ -367,47 +379,42 @@ def raise_defect(email: str, reporter_name: str, payload: dict[str, Any]) -> dic
         "created_at": now,
         "updated_at": now,
     }
-    with _LOCK:
-        conn = _connect()
-        conn.execute(
-            "INSERT INTO defects (id,email,reporter_name,title,severity,suite,case_id,steps,"
-            "expected,actual,status,published,published_at,created_at,updated_at) VALUES "
-            "(:id,:email,:reporter_name,:title,:severity,:suite,:case_id,:steps,:expected,:actual,"
-            ":status,:published,:published_at,:created_at,:updated_at)", row)
-        conn.commit()
+    ensure_schema()
+    db.run(
+        "INSERT INTO defects (id,email,reporter_name,title,severity,suite,case_id,steps,"
+        "expected,actual,status,published,published_at,created_at,updated_at) VALUES "
+        "(:id,:email,:reporter_name,:title,:severity,:suite,:case_id,:steps,:expected,:actual,"
+        ":status,:published,:published_at,:created_at,:updated_at)", row)
     return _redact(row)
 
 
 def my_defects(email: str) -> list[dict[str, Any]]:
-    with _LOCK:
-        rows = _connect().execute(
-            "SELECT * FROM defects WHERE email = ? ORDER BY created_at DESC", (email,)).fetchall()
-    return [_redact(dict(r)) for r in rows]
+    ensure_schema()
+    return [_redact(r) for r in db.all_rows(
+        "SELECT * FROM defects WHERE email = :email ORDER BY created_at DESC", {"email": email})]
 
 
 def public_defects(limit: int = 200) -> list[dict[str, Any]]:
     """The shared board. Readable by anyone, signed in or not."""
-    with _LOCK:
-        rows = _connect().execute(
-            "SELECT * FROM defects WHERE published = 1 ORDER BY published_at DESC LIMIT ?",
-            (max(1, min(limit, 500)),)).fetchall()
-    return [_redact(dict(r), public=True) for r in rows]
+    ensure_schema()
+    return [_redact(r, public=True) for r in db.all_rows(
+        "SELECT * FROM defects WHERE published = 1 ORDER BY published_at DESC LIMIT :limit",
+        {"limit": max(1, min(limit, 500))})]
 
 
 def set_published(email: str, defect_id: str, published: bool) -> dict[str, Any] | None:
     """Publish or withdraw. Only the author of a defect can move it."""
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        row = conn.execute("SELECT * FROM defects WHERE id = ?", (defect_id,)).fetchone()
+        row = db.one("SELECT * FROM defects WHERE id = :id", {"id": defect_id})
         if row is None or row["email"] != email:
             return None                      # not yours: indistinguishable from not existing
-        conn.execute("UPDATE defects SET published = ?, published_at = ?, updated_at = ? "
-                     "WHERE id = ?",
-                     (1 if published else 0, time.time() if published else None,
-                      time.time(), defect_id))
-        conn.commit()
-        return _redact(dict(conn.execute("SELECT * FROM defects WHERE id = ?",
-                                         (defect_id,)).fetchone()))
+        db.run("UPDATE defects SET published = :published, published_at = :published_at, "
+               "updated_at = :updated_at WHERE id = :id",
+               {"published": 1 if published else 0,
+                "published_at": time.time() if published else None,
+                "updated_at": time.time(), "id": defect_id})
+        return _redact(db.one("SELECT * FROM defects WHERE id = :id", {"id": defect_id}))
 
 
 def update_defect(email: str, defect_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
@@ -419,27 +426,24 @@ def update_defect(email: str, defect_id: str, changes: dict[str, Any]) -> dict[s
         fields.pop("severity")
     if "status" in fields and fields["status"] not in {"open", "triaged", "fixed", "rejected"}:
         fields.pop("status")
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        row = conn.execute("SELECT email FROM defects WHERE id = ?", (defect_id,)).fetchone()
+        row = db.one("SELECT email FROM defects WHERE id = :id", {"id": defect_id})
         if row is None or row["email"] != email:
             return None
         sets = ", ".join(f"{k} = :{k}" for k in fields)
         fields.update({"id": defect_id, "updated_at": time.time()})
-        conn.execute(f"UPDATE defects SET {sets}, updated_at = :updated_at WHERE id = :id", fields)
-        conn.commit()
-        return _redact(dict(conn.execute("SELECT * FROM defects WHERE id = ?",
-                                         (defect_id,)).fetchone()))
+        db.run(f"UPDATE defects SET {sets}, updated_at = :updated_at WHERE id = :id", fields)
+        return _redact(db.one("SELECT * FROM defects WHERE id = :id", {"id": defect_id}))
 
 
 def delete_defect(email: str, defect_id: str) -> bool:
+    ensure_schema()
     with _LOCK:
-        conn = _connect()
-        row = conn.execute("SELECT email FROM defects WHERE id = ?", (defect_id,)).fetchone()
+        row = db.one("SELECT email FROM defects WHERE id = :id", {"id": defect_id})
         if row is None or row["email"] != email:
             return False
-        conn.execute("DELETE FROM defects WHERE id = ?", (defect_id,))
-        conn.commit()
+        db.run("DELETE FROM defects WHERE id = :id", {"id": defect_id})
         return True
 
 
