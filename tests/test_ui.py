@@ -733,3 +733,79 @@ def test_ui49_my_account_shows_history_and_report_links(page):
     assert "TC_G_G16_183" in page.inner_text('[data-testid="acct-history"]')
     for link in ("dl-md", "dl-csv"):
         assert page.locator(f'[data-testid="{link}"]').is_visible()
+
+
+# ---------------------------------------------------------------------------
+# UI-51 .. UI-54  Design system
+# ---------------------------------------------------------------------------
+def _rgb(page, selector: str, prop: str) -> tuple[int, int, int]:
+    raw = page.eval_on_selector(
+        selector, f"el => getComputedStyle(el).{prop}")
+    nums = [int(float(n)) for n in raw.replace("rgba(", "").replace("rgb(", "")
+            .rstrip(")").split(",")[:3]]
+    return tuple(nums)  # type: ignore[return-value]
+
+
+def test_ui51_a_passing_case_is_green_not_grey(page):
+    """The status chip is the one thing a tester scans for down a list of 377.
+    It used to render plain grey, because lab.js emits `metric ok` and the
+    stylesheet only defined `metric good` — a class name that matched nothing."""
+    _sign_in(page, "chipuser")
+    page.fill('[data-testid="lab-search"]', "TC_G_G16_183")
+    page.wait_for_selector('[data-testid="run-TC_G_G16_183"]')
+    page.click('[data-testid="run-TC_G_G16_183"]')
+    page.wait_for_selector('[data-testid="result-TC_G_G16_183"]')
+
+    chip = '[data-testid="status-TC_G_G16_183"]'
+    assert page.inner_text(chip).strip() == "Pass"
+    red, green, blue = _rgb(page, chip, "color")
+    assert green > red + 25 and green > blue + 25, f"Pass chip is not green: {(red, green, blue)}"
+
+
+def test_ui52_the_storage_warning_matches_what_the_server_reports(page):
+    """The note used to claim a SQLite file unconditionally, so an instance with
+    a database told every trainee their results were about to be wiped. A
+    warning that is not true is worse than none: the true one stops being read."""
+    _sign_in(page, "storageuser")
+    page.click('[data-testid="tab-account"]')
+    page.wait_for_selector('[data-testid="account-body"][data-state="signed-in"]')
+    note = page.inner_text('[data-testid="account-body"]').lower()
+
+    durable = page.evaluate(
+        "async () => (await (await fetch('/api/auth/config')).json()).durable")
+    if durable:
+        assert "survive a redeploy" in note
+        assert "wiped" not in note
+    else:
+        assert "wiped by a redeploy" in note
+
+
+def test_ui53_the_brand_gradient_is_on_the_active_tab_not_every_button(page):
+    """The logo ramp marks identity and the one primary action per screen. If
+    every button carries it, the button that matters stops standing out."""
+    page.click('[data-testid="tab-lab"]')
+    active = page.eval_on_selector(
+        '.tab.active', "el => getComputedStyle(el, '::after').backgroundImage")
+    assert "gradient" in active
+
+    # A per-case Run is a flat accent, deliberately quieter than "Run selected".
+    page.wait_for_selector(".case .primary.sm")
+    small = page.eval_on_selector(
+        ".case .primary.sm", "el => getComputedStyle(el).backgroundImage")
+    assert "gradient" not in small
+
+
+def test_ui54_dark_mode_is_dark_and_still_legible(page, browser, server):
+    """Every colour is a token, so the dark theme is the same stylesheet with
+    the tokens re-pointed. This asserts it actually applies and that text keeps
+    a real contrast against the surface it sits on."""
+    dark = browser.new_page(viewport={"width": 1280, "height": 900}, color_scheme="dark")
+    try:
+        dark.set_default_timeout(UI_TIMEOUT)
+        dark.goto(server, wait_until="networkidle")
+        bg = _rgb(dark, "body", "backgroundColor")
+        text = _rgb(dark, "body", "color")
+        assert sum(bg) < 200, f"dark background is not dark: {bg}"
+        assert sum(text) > 480, f"dark text is not light: {text}"
+    finally:
+        dark.close()

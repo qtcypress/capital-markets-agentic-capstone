@@ -183,6 +183,18 @@ async function loadAccount() {
   const { body } = await api("/api/lab/account");
   const s = body.summary || {};
   const t = s.totals || {};
+  /* Say what this instance actually does with the data. The old copy claimed a
+     SQLite file unconditionally, so a deployment with DATABASE_URL set told
+     every trainee their results were about to be wiped — a warning that is not
+     true is worse than none, because the true one stops being believed. */
+  function storageNote() {
+    const durable = LAB.config?.durable ?? LAB.config?.storage === "postgres";
+    return durable
+      ? "Your results and defects are stored in this instance's database and survive a "
+        + "redeploy. The report and CSV are still the way to take them with you."
+      : "This instance keeps results in a local file. On a free hosting tier that file is "
+        + "wiped by a redeploy — download your report before you finish.";
+  }
   box.dataset.state = "signed-in";
   box.dataset.executed = String(s.executed || 0);
   box.innerHTML = `
@@ -237,8 +249,7 @@ async function loadAccount() {
         || '<tr><td colspan="5" class="hint">No defects raised yet.</td></tr>'}
       </tbody></table></div>
 
-    <p class="hint">This instance stores results in a SQLite file. On a free hosting tier that
-      disk is wiped by a redeploy — download your report before you finish.</p>`;
+    <p class="hint">${storageNote()}</p>`;
   el("acctSignOut")?.addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
     LAB.user = null; renderAuth(); loadCatalogue(); loadAccount();
